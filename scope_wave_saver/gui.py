@@ -581,7 +581,7 @@ class WaveSaverUI(tk.Tk):
         ttk.Button(top, text="⤓ 讀回", style="U.Small.TButton").pack(side="left")
         nb = ttk.Notebook(f)
         nb.pack(fill="x", pady=(4, 0))
-        for m, role in ((MASTER_DEF, "主"), (SLAVE_DEF, "輔")):
+        for m, role in ((SLAVE_DEF, "輔"), (MASTER_DEF, "主")):
             t = ttk.Frame(nb, padding=4)
             nb.add(t, text=f"  {role} {m}  ")
             heads = ("存", "CH", "bus name", "標稱 V", "V/div", "Offset", "示波器上名稱")
@@ -614,7 +614,7 @@ class WaveSaverUI(tk.Tk):
                   style="U.Muted.TLabel").pack(side="left")
         nb = ttk.Notebook(f)
         nb.pack(fill="x", pady=(4, 0))
-        for m, role in ((MASTER_DEF, "主"), (SLAVE_DEF, "輔")):
+        for m, role in ((SLAVE_DEF, "輔"), (MASTER_DEF, "主")):
             t = ttk.Frame(nb, padding=4)
             nb.add(t, text=f"  {role} {m}  ")
             rows = default_rows([f"C{i + 1}" for i in range(NCH[m])])
@@ -2393,7 +2393,7 @@ class WaveSaverUI(tk.Tk):
                     ax.set_yticks([])
                 ax.axvline(0, color="#cf222e", lw=0.8)
                 ax.grid(alpha=0.3)
-            self.fig.axes[0].set_title("合一張：主 8208HD（實線）＋ 輔 6104B（虛線）· 共同時間軸（觸發 t = 0 對齊）",
+            self.fig.axes[0].set_title("合一張：輔 6104B（虛線）＋ 主 8208HD（實線）· 共同時間軸（觸發 t = 0 對齊）",
                                        fontsize=10, family=fam, color="#0E9BD8")
             self.fig.axes[-1].set_xlabel("時間 (ms)", family=fam)
             self.fig.subplots_adjust(left=0.1, right=0.98, top=0.96, bottom=0.05, hspace=0.08)
