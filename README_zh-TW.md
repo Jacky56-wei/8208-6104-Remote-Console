@@ -11,8 +11,21 @@
 | 檔案 | 內容 |
 |---|---|
 | `screenshots/ui_review_realimg_side.png` | 並排：左 = 輔 6104B 實圖、右 = 主 8208HD 實圖 |
-| `screenshots/ui_review_realimg_stack.png` | 上下：輔在上、主在下（兩台 T/div、Delay 一樣 → 時間格上下對齊） |
+| `screenshots/ui_review_realimg_stack.png` | 上下：輔在上、主在下，各裁到格線區、**中間無縫接合**（兩台 T/div、Delay 一樣 → 時間格對齊） |
 | `screenshots/ui_review_realimg_merge.png` | 合一張：用讀回的波形資料在 PC 重畫（實圖無法疊成一張） |
+
+## 畫面存檔「照目前顯示」
+
+「顯示」選 **並排 / 上下 / 合一張**（兩個分頁共用同一個設定），按 **▶ 擷取＋存檔** 或 **📷 存目前畫面**：
+
+| 顯示 | 存成 | 內容 |
+|---|---|---|
+| 並排 | `畫面_並排.png` | 左 輔實圖 ｜ 右 主實圖（完整畫面，高度對齊），上方標題列含觸發說明 |
+| 上下 | `畫面_上下.png` | 兩張實圖裁到格線區、寬度對齊、上下直接接合（中間沒有分隔），下方一列通道 bus name / 時基 |
+| 合一張 | `畫面_合一張.png` | PC 合成波形（共同時間軸，觸發 t = 0 對齊） |
+
+每次另存兩台原始實圖 `輔_6104B_實圖.png`、`主_8208HD_實圖.png`；波形資料（.trc / CSV / NPZ / P 量測）照 ⑤ 存檔的格式勾選另存（接實機後）。
+範例輸出：`samples/side|stack|merge/`。格線區自動偵測（灰色格線外框），偵測不到改用 `composite.GRID_FRAC`（實機畫面位置待確認）。
 
 ## 版面
 
@@ -29,7 +42,7 @@
 ```bat
 REM Windows：把 scope_wave_saver\ 放在 Autotest_tool 根目錄旁（或設 U2_TOOL_DIR）
 set U2_TOOL_DIR=D:\0.Project\Github_project\Autotest_tool
-py -3 -m scope_wave_saver.gui --view side        REM side / stack / merge
+py -3 -m scope_wave_saver.gui --view side        REM side / stack / merge；--save-to <資料夾> 測試存檔
 ```
 
 需要：Python 3.10+、numpy、matplotlib、pillow（之後接實機另需 pyvisa ＋ NI-VISA / Keysight IO）。
