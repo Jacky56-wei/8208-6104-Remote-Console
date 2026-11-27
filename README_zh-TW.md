@@ -28,10 +28,10 @@
 
 - **工具列**：▶ 擷取＋存檔、■ 停止、⟳ 實圖即時更新、📷 存兩台畫面、結果資料夾 / 匯出；右邊主 / 輔觸發狀態
 - **工具列 ⤓ 讀回儀器設定 / ⤒ 寫入儀器設定**（兩台 / 主 / 輔）：觸發（來源 / 準位 / 斜率 / 模式）、時基（T/div、Delay）、通道（開關、V/div、Offset、bus name）、P1–P24、Aux Out / EXT 同步（`settings.py`；寫入前先檢查，不支援的不送）
-- **① 儀器連線**：只顯示結果（已連線 / 已對時 / Auto scale ✓）。開程式自動連線，連線後背景自動對時（中控電腦時間）與 Auto scale，不需要勾選或按鈕
+- **① 儀器連線**：只顯示連線狀態。開程式自動連線；對時（中控電腦時間）與 Auto scale 在背景自動做，只寫紀錄（紀錄分頁 ＋ `桌面\scope waveform\scope_wave_saver.log`），**失敗才**在該台下方顯示紅字
 - **② 觸發設定（主要）**：MASTER 選 8208HD / 6104B；觸發通道（C1 CORE … C8 RSTn）、準位 V、斜率 ↑ Rising / ↓ Falling / ↕ Either、模式、T/div、Delay；
   SLAVE：Aux Out → EXT（EX10、0.5 V、↑）、10 MHz 同步（選用）、輔時基跟主一樣
-- **③ 通道 ＋ bus name ＋ Auto scale**：主 C1–C8 = CORE、DDRVPP、GPIO、DDRIO、PHYIO、NFIO、NFCORE、RSTn；輔 C1–C4 = VIN、VBUS、BUSPG、IBUS（電流 A）
+- **③ 通道 ＋ bus name**：主 C1–C8 = CORE、DDRVPP、GPIO、DDRIO、PHYIO、NFIO、NFCORE、RSTn；輔 C1–C4 = VIN、VBUS、BUSPG、IBUS（電流 A）
 - **④ 量測 P1–P24（每台）**：每列標「示波器」或「PC 計算」，寫入前列出會改 PC 計算的列
 
 ### P1–P24 兩台能吃進多少（已核對）

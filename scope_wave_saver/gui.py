@@ -142,12 +142,12 @@ class WaveSaverUI(tk.Tk):
         page = body.page
         page.columnconfigure(0, weight=1)
         self._trigger(body.card("觸發設定（主要：MASTER 觸發通道 / 準位 / 斜率；SLAVE 跟 Aux Out）", 0, 0, num=2))
-        self._channels(body.card("通道 ＋ bus name ＋ Auto scale", 1, 0, num=3))
+        self._channels(body.card("通道 ＋ bus name", 1, 0, num=3))
         self._pm(body.card("量測 P1–P24（每台示波器）", 2, 0, num=4))
         self._save(body.card("存檔（中控電腦）", 3, 0, num=5))
         self._monitor(body.right_nb)
 
-    # ---- ① 儀器連線（自動連線＋Auto scale＋對時）
+    # ---- ① 儀器連線（自動連線；對時 / Auto scale 背景做，只寫紀錄，失敗才顯示）
     def _conn(self, body, InstRow):
         for role, m in (("MASTER 主", MASTER_DEF), ("SLAVE 輔", SLAVE_DEF)):
             st = tk.StringVar(self, value=f"已連線（自動）· {role}")
@@ -155,18 +155,41 @@ class WaveSaverUI(tk.Tk):
                         connect=lambda: None, connected=lambda: True, status_var=st, app_btn_text=True, btn_text="中斷")
             info = ttk.Frame(body.conn)
             info.pack(fill="x", padx=(22, 0))
-            ttk.Label(info, text=("LECROY,WR8208HD,5003N60268 · " if m == MASTER_DEF else "LECROY,HDO6104B,5108N13350 · ")
-                      , style="U.Muted.TLabel").pack(side="left")
-            for txt in ("● 已連線", "🕒 已對時 21:00:05（差 0 s）",
-                        "⇕ Auto scale ✓ " + ("8/8 CH" if m == MASTER_DEF else "3/3 CH（IBUS 電流不動）")):
-                tk.Label(info, text=txt, fg=PASS_C[0], bg=PASS_C[1], font=(self.fam, 9), padx=5).pack(side="left", padx=(4, 0))
+            ttk.Label(info, text=("LECROY,WR8208HD,5003N60268" if m == MASTER_DEF else "LECROY,HDO6104B,5108N13350"),
+                      style="U.Muted.TLabel").pack(side="left")
+            # 對時 / Auto scale 在背景做、只寫紀錄；失敗才在這裡顯示（平常隱藏）
+            self.bg_warn = getattr(self, "bg_warn", {})
+            self.bg_warn[m] = tk.Label(info, text="", fg=FAIL_C[0], bg=FAIL_C[1], font=(self.fam, 9), padx=5)
             try:
                 r.dot.set("ok")
             except Exception:  # noqa: BLE001
                 pass
-        ttk.Label(body.conn, text="開程式自動連線 → 連線後背景自動：對時（中控電腦時間）、Auto scale（依 bus name 標稱電壓）；"
-                                  "斷線自動重連，這裡只顯示結果",
-                  style="U.Muted.TLabel").pack(anchor="w", pady=(2, 2))
+
+    def bg_result(self, model, task, ok, msg=""):
+        """背景工作（對時 / Auto scale）結果：成功 → 只寫紀錄；失敗 → 紀錄 ＋ ① 該台下方紅字"""
+        self.log(f"[{model}] {task}：{'OK' if ok else '失敗'}{('　' + msg) if msg else ''}")
+        lb = self.bg_warn.get(model)
+        if lb is None:
+            return
+        if ok:
+            lb.pack_forget()
+        else:
+            lb.configure(text=f"⚠ {task}失敗：{msg}")
+            lb.pack(side="left", padx=(8, 0))
+
+    def log(self, text):
+        line = f"{_dt.datetime.now():%H:%M:%S}  {text}"
+        t = getattr(self, "log_txt", None)
+        if t is not None:
+            t.insert("end", line + "\n")
+            t.see("end")
+        try:
+            d = os.path.join(os.path.expanduser("~"), "Desktop", "scope waveform")
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "scope_wave_saver.log"), "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
 
     # ---- ② 觸發（主要）
     def _trigger(self, f):
@@ -244,7 +267,7 @@ class WaveSaverUI(tk.Tk):
         for m, role in ((MASTER_DEF, "主"), (SLAVE_DEF, "輔")):
             t = ttk.Frame(nb, padding=4)
             nb.add(t, text=f"  {role} {m}  ")
-            heads = ("存", "CH", "bus name", "標稱 V", "V/div（Auto）", "Offset", "示波器上名稱")
+            heads = ("存", "CH", "bus name", "標稱 V", "V/div", "Offset", "示波器上名稱")
             for j, h in enumerate(heads):
                 tk.Label(t, text=h, bg="#0E9BD8", fg="white", font=(self.fam, 9, "bold"), padx=4).grid(
                     row=0, column=j, sticky="we", padx=1)
@@ -260,8 +283,6 @@ class WaveSaverUI(tk.Tk):
                 ttk.Label(t, text=f"{-3.5 * float(vdiv_for(vn).split()[0]) * (1e-3 if 'mV' in vdiv_for(vn) else 1):.3g} V"
                           if vn else "0 V").grid(row=rr, column=5)
                 ttk.Label(t, text=nm + " ✓", foreground=PASS_C[0]).grid(row=rr, column=6, sticky="w", padx=4)
-        ttk.Label(f, text="Auto scale：依 bus name 的標稱電壓讓波形佔 6 / 8 格（u2core.scopescale）；電流 / 無標稱的通道不動",
-                  style="U.Muted.TLabel").pack(anchor="w", pady=(2, 0))
 
     # ---- ④ P1–P24
     def _pm(self, f):
@@ -398,7 +419,15 @@ class WaveSaverUI(tk.Tk):
             tv.column(c, width=w, anchor="center")
         tv.pack(fill="both", expand=True)
         nb.add(ttk.Frame(nb, padding=4), text="  存檔結果  ")
-        nb.add(ttk.Frame(nb, padding=4), text="  紀錄  ")
+        lg = ttk.Frame(nb, padding=4)
+        nb.add(lg, text="  紀錄  ")
+        self.log_txt = tk.Text(lg, bg="#0d1117", fg="#c9d1d9", font=("DejaVu Sans Mono", 9), height=20)
+        self.log_txt.pack(fill="both", expand=True)
+        if self.demo:                                    # 示範：背景工作結果只進紀錄
+            for m in (MASTER_DEF, SLAVE_DEF):
+                self.after(200, lambda m=m: (self.bg_result(m, "對時（中控電腦時間）", True, "DATE 寫入、讀回差 0 s"),
+                                             self.bg_result(m, "Auto scale", True,
+                                                            "8/8 CH" if m == MASTER_DEF else "3/3 CH（IBUS 電流不動）")))
         self.mon_nb = nb
         self._layout_shots()
 
