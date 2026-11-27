@@ -15,13 +15,13 @@
 | `screenshots/ui_review_settings_scrolled.png` | 左欄捲到下方：P1–P24、存檔 |
 | `screenshots/ui_capture_paused.png` | 連續擷取中拔掉 6104B USB（示範）：6104B 紅燈、「USB 中斷 — 背景重連中」、擷取 **暫停** |
 | `screenshots/ui_seq_powerup.png` / `ui_seq_powerdown.png` | 「上 / 下電時序」分頁：表格（順序、上 / 下電時間、10↔90 % 時間、slew rate、延遲、PASS / FAIL）＋ 時序圖 |
-| `screenshots/ui_1080p.png` | **1920×1080** 畫面（視窗約 1920×1040，留工作列）：① 單列連線狀態、② 預設觸發 **C8 RSTn 0.9 V**、右欄上下實圖縮放到可視區 |
+| `screenshots/ui_1080p.png` | **1920×1080** 畫面（視窗約 1920×1040，留工作列）：最上方 **DUT 規格**（U.2／M.2＋機種下拉＋總判定）、① 單列連線狀態、② 預設觸發 **C8 RSTn 0.9 V**、右欄上下實圖縮放到可視區 |
 | `screenshots/ui_arb_RAMP.png` / `ui_arb_BROWNOUT.png` / `ui_arb_ONOFFON.png` / `ui_arb_rstn.png` | ⑧ N6705 ARB：**一套共用範本**套到「一個」輸出通道（CH1 / CH3 大按鈕選擇，**預設 CH3 VIN 12V**）；三種範本是大按鈕（選中高亮）；斜率跟範本走（Ramp ↑ / Brownout·ON-OFF-ON ↓），觸發主 **C8 RSTn**；CH2 / CH4 在進階裡也可選同一個範本；Linux NVMe rescan 預設關閉 |
 | `screenshots/ui_arb_seq_onoffon.png` | ARB ON-OFF-ON 擷取後的「上 / 下電時序」分頁 |
 | `screenshots/ui_settings_capture_seq.png` | 左欄 ⑥ 連續擷取（N 次、進度）、⑦ 上電時序設定（每條 rail 門檻、上 / 下電延遲限制） |
 | `screenshots/ui_folded.png` | 子視窗收合示範：左欄部分卡片（③④⑥）收合只留 ▸ 標題；右欄實圖與紀錄同時展開、中間可拉分隔條；時序 / 合成波形收合 |
-| `screenshots/ui_spec_U2.png` | ⑨ 設計規格判比：**U.2／U.3（VIN 12 V）**＋機種 `U2_12V_PowerIC_DesignSpec`；實測 vs 設計範圍 PASS／FAIL（設計值，非正式規格）；公開輸入 12V ±8% 另列；N6705 CH3 標稱為 12 V |
-| `screenshots/ui_spec_M2.png` | ⑨ 選 **M.2（VIN 3.3 V）** 自動換 `M2_3V3_PowerIC_DesignSpec`，內部 rail 電壓跟著設計表變；N6705 CH3 標稱改成 3.3 V |
+| `screenshots/ui_spec_U2.png` | 最上方選 **U.2／U.3（VIN 12 V）**＋機種 `U2_12V_PowerIC_DesignSpec`、總判定；⑨／右欄是實測 vs 設計範圍表（設計值，非正式規格；公開輸入 12V ±8% 另列）；N6705 CH3 標稱為 12 V |
+| `screenshots/ui_spec_M2.png` | 最上方選 **M.2（VIN 3.3 V）** 自動換 `M2_3V3_PowerIC_DesignSpec`，內部 rail 電壓跟著設計表變；N6705 CH3 標稱改成 3.3 V |
 
 ## 畫面存檔
 
@@ -89,9 +89,9 @@
 - **Linux NVMe rescan（選用，預設關閉）**：⑧ 最下方勾選才展開（主機 / 帳號／密碼、認碟表）；沒勾不佔空間、不連線、**不 import paramiko**。啟用後 ARB 每次擷取會 PCIe rescan，用 `nvme list -o json`（沒有則 sysfs + lsblk）列出 `/dev/nvmeXn1`、型號、序號、容量、韌體、PCIe BDF、Link，寫紀錄與 `summary.csv`。示範模式為模擬資料。
 
 
-## ⑨ 設計規格判比（U.2／M.2 · 電源設計表）
+## DUT 規格（最上方固定列）＋ ⑨ 設計規格判比表
 
-跟隨 **Autotest_tool**（`U2_TOOL_DIR`／`u2core`）的慣例，不另造一套機種表：
+跟隨 **Autotest_tool**（`U2_TOOL_DIR`／`u2core`）的慣例，不另造一套機種表。**U.2／M.2 選擇、機種／電源設計表下拉、總判定**放在左欄最上方、① 儀器連線之上的固定列（不隨左欄捲動、不收合）。⑨ 與右欄「設計規格判比」是可收合的對照表。
 
 - **DUT 規格**（`u2core.dutspec`）：U.2／U.3（VIN 12 V）或 M.2（VIN 3.3 V）。選了會用 `powerprofile.match_vin` 自動換對應的電源設計表，並把 **N6705 CH3（VIN）標稱**改成 12 V 或 3.3 V，ARB Ramp／Brownout／ON-OFF-ON 的準位跟著改。
 - **機種** = Autotest 的「電源設計表」（`u2core.powerprofile.names()`），不是一長串 SSD SKU。隨附兩份與 Autotest `origin/main` `dut_power/` **同檔**：

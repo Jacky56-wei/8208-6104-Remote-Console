@@ -3,8 +3,8 @@
 
 版型照 All in Test tool《UI設計風格說明.md》：u2core.theme.apply、工具列 ▶/■ + action_row、狀態列、
 UnifiedBody（左：① 儀器連線 + ②③… 設定卡片；右：執行監看）。
-子視窗（①–⑨、時序表／圖、規格判比、紀錄、NVMe…）可點 ▾/▸ 收合、拖標題排序、拖分隔條改大小、⧉ 獨立視窗；狀態寫入 ui_layout.json。
-⑨ 設計規格判比跟隨 Autotest_tool（u2core.dutspec／powerprofile／designspec.compare；U2_TOOL_DIR 沒有就用隨附 specs/dut_power）。
+DUT 規格（U.2／M.2＋機種／電源設計表＋總判定）放在最上方、① 儀器連線之上的固定列。子視窗（①–⑨、時序表／圖、規格判比表、紀錄、NVMe…）可點 ▾/▸ 收合、拖標題排序、拖分隔條改大小、⧉ 獨立視窗；狀態寫入 ui_layout.json。
+⑨ 是設計規格判比表（跟隨 Autotest_tool u2core.dutspec／powerprofile／designspec.compare；U2_TOOL_DIR 沒有就用隨附 specs/dut_power）。
 右側主畫面 = 兩部示波器「實圖」（SCREEN_DUMP）上下無縫接合：上 = 輔（SLAVE）、下 = 主（MASTER），時間格對齊。
 「合一張」可與實圖同時展開：用讀回的波形資料在 PC 重畫。存檔一律存上下實圖。
 連續擷取（capture.py）、上電時序（sequencing.py）、USB 自動重連（link.py）。
@@ -168,6 +168,7 @@ class WaveSaverUI(tk.Tk):
             pass
         self._conn(body)
         self._fold_conn(body)
+        self._dut_bar(body)
         page = body.page
         page.columnconfigure(0, weight=1)
         page.rowconfigure(0, weight=1)
@@ -182,7 +183,7 @@ class WaveSaverUI(tk.Tk):
         self._capture_card(self._left_card("cap", "連續擷取（觸發次數）", 6))
         self._seq_card(self._left_card("seq", "上電時序（PC 計算）", 7))
         self._arb_card(self._left_card("arb", "N6705 ARB 啟動＋擷取（Ramp / Brownout margin / Instant ON-OFF-ON）", 8))
-        self._spec_card(self._left_card("spec", "設計規格判比（U.2／M.2 · 電源設計表）", 9))
+        self._spec_card(self._left_card("spec", "設計規格判比（實測 vs 電源設計表）", 9))
         self._monitor(body)
         self.after(200, self._restore_sashes)
         self.after(400, lambda: self.body.pw.bind("<ButtonRelease-1>", lambda _e: self._persist_sash(), add="+"))
@@ -224,7 +225,7 @@ class WaveSaverUI(tk.Tk):
             pass
 
     def _apply_fold(self, fold="", unfold=""):
-        """測試 / 截圖：強制收合或展開指定 key（逗號分隔：conn,trig,ch,pm,save,cap,seq,arb,shots,waves,seqv,pmt,saved,log,nvme）。"""
+        """測試 / 截圖：強制收合或展開指定 key（逗號分隔：conn,trig,ch,pm,save,cap,seq,arb,spec,shots,waves,seqv,specv,pmt,saved,log,nvme）。DUT 規格選擇列在最上方，不收進 fold。"""
         def keys(s):
             return [k.strip() for k in (s or "").split(",") if k.strip()]
         for k in keys(fold):
@@ -868,47 +869,62 @@ class WaveSaverUI(tk.Tk):
             return v
         return VNOM.get(name, default) or default
 
-    def _spec_card(self, f):
-        """⑨ 選 DUT 規格（U.2／M.2）＋ 機種（電源設計表），對照實測 PASS／FAIL。慣例同 Autotest powerprofile_ui。"""
-        tip = ttk.Label(f, text="跟隨 Autotest_tool：機種＝電源設計表（u2core.powerprofile），"
-                                "數值是「設計值，非正式規格」。公開輸入（U.2 12V ±8%／M.2 3.3V ±5%）另列。"
-                                "請確認規格：U.2＝12 V、M.2＝3.3 V，勿套錯。缺 min／max 標「待填」，不臆造。",
-                        style="U.Muted.TLabel", wraplength=780, justify="left")
-        tip.pack(anchor="w")
-        row = ttk.Frame(f)
-        row.pack(fill="x", pady=(4, 0))
-        ttk.Label(row, text="DUT 規格", style="Trig.TLabel").pack(side="left", padx=(0, 8))
+    def _dut_bar(self, body):
+        """DUT 規格選擇列：放在 ① 儀器連線上方的固定列（不收進左欄 fold，避免被捲走或收合）。"""
+        top = getattr(body, "_top", None)
+        if top is None:
+            wrap = ttk.Frame(body.left)
+            wrap.pack(fill="x", padx=8, pady=(4, 2))
+        else:
+            for w in top.grid_slaves():
+                info = w.grid_info()
+                if str(info.get("row", "0")) == "0":
+                    w.grid_configure(row=1)
+            wrap = ttk.Frame(top, padding=(10, 6, 10, 4))
+            wrap.grid(row=0, column=0, sticky="nsew")
+        self.dut_bar = wrap
+        hd = ttk.Frame(wrap)
+        hd.pack(fill="x")
+        ttk.Label(hd, text="DUT 規格", style="U.Sec.TLabel").pack(side="left", padx=(0, 8))
         self.v_spec_form = tk.StringVar(self, value="U2")
         self._spec_form_btns = {}
+        short = {"U2": "U.2／U.3（VIN 12 V）", "M2": "M.2（VIN 3.3 V）"}
         for key in SC.DUT.ORDER:
-            b = tk.Button(row, text=SC.DUT.SPECS[key][1], font=(self.fam, 10, "bold"),
-                          width=22, cursor="hand2", bd=3, relief="raised",
+            b = tk.Button(hd, text=short.get(key, SC.DUT.SPECS[key][1]), font=(self.fam, 10, "bold"),
+                          width=20, cursor="hand2", bd=3, relief="raised",
                           command=lambda k=key: self._apply_spec(form=k))
             b.pack(side="left", padx=3)
             self._spec_form_btns[key] = b
-        row2 = ttk.Frame(f)
-        row2.pack(fill="x", pady=(6, 0))
+        self.v_spec_overall = tk.StringVar(self, value="尚未判比")
+        self.lb_spec_overall = tk.Label(hd, textvariable=self.v_spec_overall, font=(self.fam, 11, "bold"),
+                                        fg="#0E9BD8", bg="#FFFFFF", anchor="e")
+        self.lb_spec_overall.pack(side="right", padx=(8, 0))
+        row2 = ttk.Frame(wrap)
+        row2.pack(fill="x", pady=(4, 0))
         ttk.Label(row2, text="機種／電源設計表", style="Trig.TLabel").pack(side="left", padx=(0, 8))
         names = SC.PP.names() or [SC.DEFAULT]
         self.v_spec_profile = tk.StringVar(self, value=SC.PP.get() or names[0])
         self.cb_spec_profile = ttk.Combobox(row2, textvariable=self.v_spec_profile, values=names,
-                                            state="readonly", width=36)
+                                            state="readonly", width=32)
         self.cb_spec_profile.pack(side="left", padx=4)
         self.cb_spec_profile.bind("<<ComboboxSelected>>", lambda _e: self._apply_spec(profile=self.v_spec_profile.get()))
         ttk.Button(row2, text="編輯…", style="U.Small.TButton", command=self._spec_edit).pack(side="left", padx=2)
         ttk.Button(row2, text="另存…", style="U.Small.TButton", command=lambda: self._spec_edit(save_as=True)).pack(side="left")
         ttk.Button(row2, text="⟳ 重判", style="U.Small.TButton", command=lambda: self._spec_refresh()).pack(side="left", padx=6)
         self.v_spec_warn = tk.StringVar(self, value="")
-        ttk.Label(f, textvariable=self.v_spec_warn, foreground="#9a6700", wraplength=780, justify="left").pack(anchor="w")
+        ttk.Label(wrap, textvariable=self.v_spec_warn, foreground="#9a6700", wraplength=780, justify="left").pack(anchor="w")
+        self.after(350, lambda: self._apply_spec(form=getattr(self, "_want_form", None) or "U2",
+                                                 profile=getattr(self, "_want_profile", None)))
+
+    def _spec_card(self, f):
+        """⑨ 可收合的判比表（選擇列已在最上方固定列）。"""
+        tip = ttk.Label(f, text="跟隨 Autotest_tool：機種＝電源設計表（u2core.powerprofile），"
+                                "數值是「設計值，非正式規格」。公開輸入（U.2 12V ±8%／M.2 3.3V ±5%）另列。"
+                                "缺 min／max 標「待填」，不臆造。選規格在最上方固定列。",
+                        style="U.Muted.TLabel", wraplength=780, justify="left")
+        tip.pack(anchor="w")
         self.v_spec_src = tk.StringVar(self, value="")
         ttk.Label(f, textvariable=self.v_spec_src, style="U.Muted.TLabel", wraplength=780, justify="left").pack(anchor="w")
-        ov = ttk.Frame(f)
-        ov.pack(fill="x", pady=(4, 2))
-        self.v_spec_overall = tk.StringVar(self, value="尚未判比")
-        self.lb_spec_overall = tk.Label(ov, textvariable=self.v_spec_overall, font=(self.fam, 11, "bold"),
-                                        fg="#0E9BD8", bg="#FFFFFF", anchor="w")
-        self.lb_spec_overall.pack(side="left", fill="x", expand=True)
-        # 左欄精簡表（右欄 specv 有完整表）
         cols = ("ch", "nom", "rng", "meas", "ok")
         heads = ("通道", "標稱", "設計範圍", "實測", "判定")
         tv = ttk.Treeview(f, columns=cols, show="headings", height=8)
@@ -920,8 +936,6 @@ class WaveSaverUI(tk.Tk):
             tv.tag_configure(tag, foreground=fg, background=bg)
         tv.pack(fill="x", pady=(2, 0))
         self.tv_spec_left = tv
-        self.after(350, lambda: self._apply_spec(form=getattr(self, "_want_form", None) or "U2",
-                                                 profile=getattr(self, "_want_profile", None)))
 
     def _spec_tab(self, f):
         hd = ttk.Frame(f)
@@ -1017,9 +1031,11 @@ class WaveSaverUI(tk.Tk):
         src = SC.source_report()
         pp = src.get("powerprofile", "")
         short = "u2core.powerprofile" if pp.startswith("u2core") else "隨附 specs/dut_power（鏡射 Autotest origin/main）"
-        self.v_spec_src.set(f"來源：{short}　目前 {SC.form_label()}／{SC.PP.get()}　VIN {vin:g} V。"
-                            f"選規格會自動 match_vin，並把 N6705 CH3 標稱改成 {vin:g} V。")
-        self.v_spec_warn.set(warn or "")
+        if hasattr(self, "v_spec_src"):
+            self.v_spec_src.set(f"來源：{short}　目前 {SC.form_label()}／{SC.PP.get()}　VIN {vin:g} V。"
+                                f"選規格會自動 match_vin，並把 N6705 CH3 標稱改成 {vin:g} V。")
+        if hasattr(self, "v_spec_warn"):
+            self.v_spec_warn.set(warn or "")
         self.log(f"⑨ 規格：{SC.form_label()}　設計表 {SC.PP.get()}　VIN {vin:g} V"
                  + (f"　{warn}" if warn else ""))
         # 重算時序＋判比（_seq_recalc 會叫 _spec_refresh）

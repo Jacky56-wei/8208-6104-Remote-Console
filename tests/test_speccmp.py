@@ -60,3 +60,25 @@ class SpecCmpTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LayoutMigrateTest(unittest.TestCase):
+    def test_v1_to_v2(self):
+        import json, tempfile, os
+        from scope_wave_saver.foldui import LayoutStore, LAYOUT_VERSION
+        fd, path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"version": 1, "collapsed": {"spec": False},
+                           "order": {"left": ["trig", "spec", "arb"]},
+                           "sash": {}, "weights": {}}, f)
+            st = LayoutStore(path)
+            self.assertEqual(st.data["version"], LAYOUT_VERSION)
+            # 不重寫使用者拖過的順序；spec 仍是判比表卡片
+            self.assertEqual(st.order("left", ["trig", "ch", "arb", "spec"]), ["trig", "spec", "arb", "ch"])
+            with open(path, encoding="utf-8") as f:
+                saved = json.load(f)
+            self.assertEqual(saved["version"], LAYOUT_VERSION)
+        finally:
+            os.remove(path)

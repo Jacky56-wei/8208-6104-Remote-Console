@@ -23,12 +23,16 @@ def layout_path(override=""):
     return os.path.join(os.path.expanduser("~"), ".config", "scope_wave_saver", "ui_layout.json")
 
 
+# v1：左欄 fold 卡片含 ⑨ 選擇列＋表。v2：DUT 規格選擇列改放 ① 上方固定列；「spec」只剩判比表。
+LAYOUT_VERSION = 2
+
+
 class LayoutStore:
     """記住收合狀態、順序、分隔條位置。"""
 
     def __init__(self, path=""):
         self.path = layout_path(path)
-        self.data = {"version": 1, "collapsed": {}, "order": {}, "sash": {}, "weights": {}}
+        self.data = {"version": LAYOUT_VERSION, "collapsed": {}, "order": {}, "sash": {}, "weights": {}}
         self.enabled = bool(self.path) and self.path != "-"
         if self.enabled:
             self.load()
@@ -44,6 +48,20 @@ class LayoutStore:
                         self.data[k] = {}
         except (OSError, json.JSONDecodeError, TypeError):
             pass
+        self._migrate()
+
+    def _migrate(self):
+        """舊 ui_layout.json 升到目前版：選擇列已不在左欄 fold 裡，不重寫使用者拖過的卡片順序。"""
+        try:
+            v = int(self.data.get("version") or 1)
+        except (TypeError, ValueError):
+            v = 1
+        if v >= LAYOUT_VERSION:
+            return
+        # v1 → v2：DUT 規格（U.2／M.2＋機種）移到 ① 上方固定列；left.order 的 spec 仍是判比表卡片
+        self.data["version"] = LAYOUT_VERSION
+        if self.enabled:
+            self.save()
 
     def save(self):
         if not self.enabled:
