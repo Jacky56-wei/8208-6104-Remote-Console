@@ -141,7 +141,7 @@ class WaveSaverUI(tk.Tk):
         self._conn(body, InstRow)
         page = body.page
         page.columnconfigure(0, weight=1)
-        self._trigger(body.card("觸發設定（主要：MASTER 觸發通道 / 準位 / 斜率；SLAVE 跟 Aux Out）", 0, 0, num=2))
+        self._trigger(body.card("觸發設定（MASTER 觸發通道 / 準位 / 斜率）", 0, 0, num=2))
         self._channels(body.card("通道 ＋ bus name", 1, 0, num=3))
         self._pm(body.card("量測 P1–P24（每台示波器）", 2, 0, num=4))
         self._save(body.card("存檔（中控電腦）", 3, 0, num=5))
@@ -233,25 +233,11 @@ class WaveSaverUI(tk.Tk):
         ttk.Button(bf, text="▶ SINGLE（輔先 arm，主再 arm）").pack(side="left", padx=6)
         ttk.Button(bf, text="⤓ 讀回示波器目前觸發", style="U.Small.TButton").pack(side="left")
         ttk.Label(bf, text="讀回 ✓ C1 0.42 V POS", foreground=PASS_C[0]).pack(side="left", padx=8)
-        sl = ttk.LabelFrame(f, text=" SLAVE 觸發（Aux Out → EXT，BNC）", padding=(8, 2, 8, 4))
-        sl.pack(fill="x", pady=(8, 0))
-        r = ttk.Frame(sl)
-        r.pack(fill="x")
-        ttk.Checkbutton(r, text="主 / 輔硬體觸發同步", variable=self._bv("sync_on", True)).pack(side="left")
-        ttk.Label(r, text="  EXT 來源").pack(side="left")
-        ttk.Combobox(r, textvariable=self._sv("ext_src", "EX10"), values=["EX10", "EX"], state="readonly",
-                     width=6).pack(side="left", padx=2)
-        ttk.Label(r, text="準位").pack(side="left")
-        ttk.Entry(r, textvariable=self._sv("ext_lv", "0.5"), width=5).pack(side="left", padx=2)
-        ttk.Label(r, text="V  斜率 ↑ POS").pack(side="left")
-        r2 = ttk.Frame(sl)
-        r2.pack(fill="x")
-        ttk.Checkbutton(r2, text="輔的 T/div、Delay、記憶體深度跟主一樣", variable=self._bv("align", True)).pack(side="left")
-        ttk.Label(r2, text="  MASTER AUX OUT = TriggerOut ✓　SLAVE EXT 觸發 ✓（讀回）", foreground=PASS_C[0]).pack(side="left")
-        ttk.Label(sl, text="接線：MASTER 背板 AUX OUT ──BNC── SLAVE 前面板 EXT",
-                  style="U.Muted.TLabel").pack(anchor="w")
+        # 主 / 輔同步固定在背景做（主 8208HD AUX OUT ──BNC── 輔 6104B EXT；EX10、0.5 V、↑；輔時基跟主），UI 不顯示
+        self._bv("sync_on", True)
+        self._bv("align", True)
 
-    # ---- ③ 通道＋bus name＋Auto scale
+    # ---- ③ 通道＋bus name
     def _channels(self, f):
         top = ttk.Frame(f)
         top.pack(fill="x")
@@ -425,6 +411,8 @@ class WaveSaverUI(tk.Tk):
         if self.demo:                                    # 示範：背景工作結果只進紀錄
             for m in (MASTER_DEF, SLAVE_DEF):
                 self.after(200, lambda m=m: (self.bg_result(m, "對時（中控電腦時間）", True, "DATE 寫入、讀回差 0 s"),
+                                             self.bg_result(m, "主 / 輔觸發同步", True,
+                                                            "AUX OUT = TriggerOut" if m == MASTER_DEF else "EX10 0.5 V ↑"),
                                              self.bg_result(m, "Auto scale", True,
                                                             "8/8 CH" if m == MASTER_DEF else "3/3 CH（IBUS 電流不動）")))
         self.mon_nb = nb

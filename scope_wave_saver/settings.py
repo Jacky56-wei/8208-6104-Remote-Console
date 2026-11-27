@@ -6,7 +6,8 @@
    "trig": {"src": "C1", "level": 0.42, "slope": "POS"/"NEG"/"EITHER", "mode": "SINGLE"/"NORM"/"AUTO"},
    "timebase": {"tdiv": 1e-3, "delay": -3e-3},
    "channels": [{"ch": 1, "on": True, "name": "CORE", "vdiv": 0.2, "offset": -0.7, "unit": "V"}, …],
-   "pm": [P1–P24 列], "sync": {"aux_out": "TriggerOut", "ext_src": "EX10", "ext_level": 0.5}}
+   "pm": [P1–P24 列], "sync": {"on": True, "aux_out": "TriggerOut"}}
+   主 / 輔同步固定值（背景自動，UI 不給設）：MASTER AUX OUT = TriggerOut；SLAVE EXT10、0.5 V、↑ POS
    （不碰 10 MHz Ref In / Ref Out，不接 cable）
 指令來源（Autotest_tool）：
   觸發   trigpanel.write_trigger：TRIG_SELECT EDGE,SR,Cn,HT,OFF · Cn:TRIG_LEVEL · Cn:TRIG_SLOPE；
@@ -54,6 +55,32 @@ def slope_q(q, ch):
         return {"POSITIVE": "POS", "NEGATIVE": "NEG", "EITHER": "EITHER"}.get(v, v or "?")
     except Exception:  # noqa: BLE001
         return "?"
+
+
+EXT_SRC, EXT_LEVEL, EXT_SLOPE = "EX10", 0.5, "POS"      # SLAVE 觸發固定值（不給使用者設）
+
+
+def apply_sync(w, q, role):
+    """連線後背景自動做：MASTER → AUX OUT = Trigger Out；SLAVE → EX10 / 0.5 V / ↑。回傳失敗訊息 list"""
+    bad = []
+    if role == "master":
+        for c in ("AUXILIARY_OUTPUT TRIGGER_OUT", f"VBS '{AUX_VBS} = \"TriggerOut\"'"):
+            try:
+                w(c)
+            except Exception:  # noqa: BLE001
+                pass
+        if "TRIG" not in _vbs(q(f"VBS? 'return={AUX_VBS}'")).upper():
+            bad.append("AUX OUT 不是 Trigger Out（Utilities → Aux Output 選 Trigger Out）")
+    else:
+        w(f"TRIG_SELECT EDGE,SR,{EXT_SRC},HT,OFF")
+        w(f"{EXT_SRC}:TRIG_LEVEL {EXT_LEVEL:.6g}")
+        w(f"{EXT_SRC}:TRIG_SLOPE {EXT_SLOPE}")
+        try:
+            if EXT_SRC not in q("TRIG_SELECT?").upper():
+                bad.append(f"SLAVE 觸發來源讀回不是 {EXT_SRC}")
+        except Exception:  # noqa: BLE001
+            pass
+    return bad
 
 
 def read(q, model, role="master"):
@@ -153,18 +180,9 @@ def write(w, q, cfg, log=print):
         if t.get("mode") in ("NORM", "AUTO"):
             w(f"TRIG_MODE {t['mode']}")
         if sy.get("on", True):
-            for c in ("AUXILIARY_OUTPUT TRIGGER_OUT", f"VBS '{AUX_VBS} = \"TriggerOut\"'"):
-                try:
-                    w(c)
-                except Exception:  # noqa: BLE001
-                    pass
-            if "TRIG" not in _vbs(q(f"VBS? 'return={AUX_VBS}'")).upper():
-                bad.append("AUX OUT 不是 Trigger Out（Utilities → Aux Output 選 Trigger Out）")
-    else:
-        src, lv = sy.get("ext_src", "EX10"), float(sy.get("ext_level", 0.5))
-        w(f"TRIG_SELECT EDGE,SR,{src},HT,OFF")
-        w(f"{src}:TRIG_LEVEL {lv:.6g}")
-        w(f"{src}:TRIG_SLOPE POS")
+            bad += apply_sync(w, q, "master")
+    elif sy.get("on", True):
+        bad += apply_sync(w, q, "slave")
     slots = PM.parse(cfg.get("pm") or [], model, n)
     bad += PM.setup(w, q, slots, PM.inst_max(model), log=log)
     return bad
