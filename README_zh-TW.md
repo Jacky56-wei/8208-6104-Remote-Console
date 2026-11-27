@@ -1,10 +1,10 @@
-# 8208-6104 Remote Console — 雙示波器波形工具（UI 原型）
+# 8208-6104 Remote Console — 雙示波器波形工具
 
 主 **WaveRunner 8208HD（MASTER，8 CH）** ＋ 輔 **HDO6104B（SLAVE，4 CH）**：
 觸發設定、bus name、P1–P24 量測、Auto scale、對時、Aux Out → EXT 主從觸發，兩台**實圖（SCREEN_DUMP）**同時看，波形存到中控電腦。
 
-> **目前狀態：UI 原型（示意資料）。** 畫面上的示波器圖是 **PLACEHOLDER 示意圖**，還沒接實機；
-> `lecroy.py`、`busname.py`、`pmeas.py` 是儀器邏輯草稿（照 All in Test tool 寫法），**尚未接到 UI、未實機測試**。
+> **目前狀態：預設 = 示範模式（模擬示波器，`SimScope`）**，整個流程（連線 → 背景設定 → arm → 觸發 → 讀 → 存 → 上 / 下電時序 → 斷線重連）
+> 都用模擬示波器跑過；畫面上的示波器圖是 **PLACEHOLDER 示意圖**。`--real` 接實機（USB VISA），**尚未實機測試**。
 
 ## 畫面
 
@@ -13,6 +13,9 @@
 | `screenshots/ui_review_stack.png` | 主畫面：兩台實圖**上下無縫接合**（上 = 輔 6104B、下 = 主 8208HD；各裁到格線區，T/div、Delay 一樣 → 時間格對齊） |
 | `screenshots/ui_review_merge_tab.png` | 「合一張（PC 合成波形）」分頁：只看，用讀回的波形資料在 PC 重畫 |
 | `screenshots/ui_review_settings_scrolled.png` | 左欄捲到下方：P1–P24、存檔 |
+| `screenshots/ui_capture_paused.png` | 連續擷取中拔掉 6104B USB（示範）：6104B 紅燈、「USB 中斷 — 背景重連中」、擷取 **暫停** |
+| `screenshots/ui_seq_powerup.png` / `ui_seq_powerdown.png` | 「上 / 下電時序」分頁：表格（順序、上 / 下電時間、10↔90 % 時間、slew rate、延遲、PASS / FAIL）＋ 時序圖 |
+| `screenshots/ui_settings_capture_seq.png` | 左欄 ⑥ 連續擷取（N 次、進度）、⑦ 上電時序設定（每條 rail 門檻、上 / 下電延遲限制） |
 
 ## 畫面存檔
 
@@ -23,6 +26,36 @@
 - 波形資料（.trc / CSV / NPZ / P 量測）照 ⑤ 存檔的格式勾選另存（接實機後）
 
 範例輸出：`samples/`。格線區自動偵測（灰色格線外框），偵測不到改用 `composite.GRID_FRAC`（實機畫面位置待確認）。
+
+## ⑥ 連續擷取（觸發次數）
+
+- **觸發次數 N**（0 = 一直到 ■ 停止）、**等觸發逾時**（0 = 一直等；逾時 → 重新 arm 同一個序號）；▶ 擷取＋存檔 開始，■ 停止 = 做完這一次就停
+- 每一次（`capture.py`，順序照 `u2core/scope8208` arm_single / wait_acq、`u2core/scope2` wait_b）：
+  輔先 arm（STOP → INR? → TRIG_MODE SINGLE → 讀回 SINGLE）→ 主再 arm → 等 pre-trigger 填滿 → 等主觸發（INR? bit0 / TRIG_MODE? = STOP）
+  → 等輔跟著觸發（≤ 3 s，沒觸發 → 紀錄提醒檢查 BNC，照存主的）→ 兩台 WaitUntilIdle → 讀實圖、波形、P 值 → 存
+- 每次一個序號資料夾：`<存到>\<前綴>_<日期時間>_連續\0001_210012\0001_畫面_上下.png`、`0001_主_8208HD_C1_CORE.trc / .csv`、
+  `0001_pmeas.csv`、`0001_上電時序.csv / .png`（或 `下電時序`）、`0001_info.json`
+- 同一個資料夾的 **`summary.csv`**：每次一列（序號、觸發時間、上電 / 下電、輔有沒有觸發、時序判定、順序、每條 rail 延遲與 slew rate、每個 P 值、斷線備註）
+- 進度：⑥ 進度條 ＋「n / N · 最後觸發 hh:mm:ss · 狀態（arm 中 / 等觸發 / 讀取存檔中 / ⏸ 暫停）」，工具列右上狀態也一起顯示
+- 範例輸出：`samples/連續擷取_示範/`（2 次：上電 ＋ 下電）
+
+## ⑦ 上 / 下電時序 ＋ slew rate（PC 計算）
+
+- 用存下來的波形（兩台同一條時間軸，t = 0 = 主觸發；輔由 AUX OUT → EXT 觸發，可填「輔時間修正 ns」）
+- **方向**：自動判斷（看各 rail 波形頭尾是升還是降）／上電／下電
+- 每條 rail：**10 % / 90 %**（可改）× 標稱 → 穿越時間；上升 / 下降時間；**slew rate V/ms**（下電為負；IBUS 電流 A/ms：上電 = 10→90 % 峰值，下電 = 起始電流 90→10 %）
+- RSTn、BUSPG = 邏輯訊號：上 / 下電時間用 **邏輯門檻 V**（預設 0.7 × 標稱，可改）
+- 上 / 下電時間 = 高門檻（power good，預設）或低門檻；**順序**、對 **參考 rail（預設 VIN）的延遲**
+- 可選：每條 rail **上電延遲下限 / 上限**、**下電延遲下限 / 上限**（ms）→ PASS / FAIL（範例：CORE、RSTn 已填，可清掉）
+- 右側「上 / 下電時序」分頁：表格 ＋ 時序圖（每條 rail 一列、標 10 / 90 % 點、紅線 = 觸發、藍虛線 = 參考）；每次擷取存 CSV ＋ PNG
+
+## USB 自動重連（`link.py`）
+
+- 每台一個 Link：所有指令走同一把鎖；VISA 錯誤 / 逾時（VisaIOError、VI_ERROR_TMO / CONN_LOST / RSRC_NFOUND、OSError…）→ **標成斷線（紅燈 ＋ ① 該台下方「USB 中斷 — 背景重連中」）**
+- 背景重試，退避 1、2、4、8、15、30 s；重連成功 → 先重新做背景設定（對時、主 AUX OUT / 輔 EXT、bus name、**上次「寫入儀器設定」的內容**；沒寫過才做 Auto scale）→ 才標回已連線
+- 閒置時每 3 s 心跳（`*OPC?`；即時更新開著就用 SCREEN_DUMP）→ 沒在擷取也會發現被拔
+- 連續擷取中斷線 → **暫停**，重連後 **重做這一次**（不跳號），空檔寫紀錄與 summary 備註；所有事件寫紀錄分頁 ＋ log 檔
+- 示範：① 每台有「模擬拔 USB 5 s（示範）」按鈕；或 `--unplug 6104B:4@3`（3 s 後拔 6104B 4 s）
 
 ## 版面
 
@@ -60,10 +93,11 @@ git clone https://github.com/Jacky56-wei/8208-6104-Remote-Console.git
 cd 8208-6104-Remote-Console
 py -3 -m pip install -r requirements.txt
 set U2_TOOL_DIR=D:\0.Project\Github_project\Autotest_tool
-py -3 -m scope_wave_saver.gui        REM 或 py -3 -m scope_wave_saver / py -3 run_gui.py
+py -3 -m scope_wave_saver.gui        REM 示範模式；接實機加 --real（run.bat --real 也可以）
 ```
 
-參數：`--view merge` 開在合一張分頁；`--save-to <資料夾>` 測試存檔。重產示意圖：`py -3 -m scope_wave_saver.demo_screens`。
+參數：`--real` 接實機（預設示範模式）；`--view merge|seq` 開在合一張 / 上下電時序分頁；`--capture N` 啟動後自動擷取 N 次；
+`--unplug 6104B:4@3`（示範）模擬拔 USB；`--folder <資料夾>` 存檔位置；`--save-to <資料夾>` 測試存檔。重產示意圖：`py -3 -m scope_wave_saver.demo_screens`。
 
 ## 打包成 exe（Windows）
 
