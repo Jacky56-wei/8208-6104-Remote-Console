@@ -244,12 +244,11 @@ class WaveSaverUI(tk.Tk):
         ttk.Label(r, text="準位").pack(side="left")
         ttk.Entry(r, textvariable=self._sv("ext_lv", "0.5"), width=5).pack(side="left", padx=2)
         ttk.Label(r, text="V  斜率 ↑ POS").pack(side="left")
-        ttk.Checkbutton(r, text="10 MHz 同步（Ref Out → Ref In）", variable=self._bv("ref10m", False)).pack(side="left", padx=10)
         r2 = ttk.Frame(sl)
         r2.pack(fill="x")
         ttk.Checkbutton(r2, text="輔的 T/div、Delay、記憶體深度跟主一樣", variable=self._bv("align", True)).pack(side="left")
         ttk.Label(r2, text="  MASTER AUX OUT = TriggerOut ✓　SLAVE EXT 觸發 ✓（讀回）", foreground=PASS_C[0]).pack(side="left")
-        ttk.Label(sl, text="接線：MASTER 背板 AUX OUT ──BNC── SLAVE 前面板 EXT（勾 10 MHz 同步再加 Ref Out → Ref In）",
+        ttk.Label(sl, text="接線：MASTER 背板 AUX OUT ──BNC── SLAVE 前面板 EXT",
                   style="U.Muted.TLabel").pack(anchor="w")
 
     # ---- ③ 通道＋bus name＋Auto scale

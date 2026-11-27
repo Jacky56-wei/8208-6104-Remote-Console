@@ -6,14 +6,15 @@
    "trig": {"src": "C1", "level": 0.42, "slope": "POS"/"NEG"/"EITHER", "mode": "SINGLE"/"NORM"/"AUTO"},
    "timebase": {"tdiv": 1e-3, "delay": -3e-3},
    "channels": [{"ch": 1, "on": True, "name": "CORE", "vdiv": 0.2, "offset": -0.7, "unit": "V"}, …],
-   "pm": [P1–P24 列], "sync": {"aux_out": "TriggerOut", "ext_src": "EX10", "ext_level": 0.5, "ref10m": False}}
+   "pm": [P1–P24 列], "sync": {"aux_out": "TriggerOut", "ext_src": "EX10", "ext_level": 0.5}}
+   （不碰 10 MHz Ref In / Ref Out，不接 cable）
 指令來源（Autotest_tool）：
   觸發   trigpanel.write_trigger：TRIG_SELECT EDGE,SR,Cn,HT,OFF · Cn:TRIG_LEVEL · Cn:TRIG_SLOPE；
          EITHER → Cn:TRIG_SLOPE WINDOW，讀回不是雙向 → VBS app.Acquisition.Trigger.Cn.Slope = "Either"
   時基   TIME_DIV · TRIG_DELAY；通道 Cn:VOLT_DIV / Cn:OFFSET（電流 A → VBS VerScale / VerOffset，scopesync.vdiv_cmd）
   名稱   busname.set_names（scopesync）；P1–P24 pmeas.setup（只寫示波器支援的 Pn，其餘 PC 計算並提醒）
   同步   scope2.sync_plan：MASTER AUXILIARY_OUTPUT TRIGGER_OUT ＋ VBS AuxOutput.AuxMode = "TriggerOut"；
-         SLAVE TRIG_SELECT EDGE,SR,EX10,HT,OFF · EX10:TRIG_LEVEL 0.5 · EX10:TRIG_SLOPE POS；10 MHz：ReferenceClock INT / EXT
+         SLAVE TRIG_SELECT EDGE,SR,EX10,HT,OFF · EX10:TRIG_LEVEL 0.5 · EX10:TRIG_SLOPE POS
 SLAVE 的觸發一律是 EXT（跟 MASTER Aux Out），UI 的觸發通道只寫到 MASTER。
 """
 from __future__ import annotations
@@ -25,7 +26,6 @@ from . import pmeas as PM
 from .lecroy import SCOPES
 
 AUX_VBS = "app.Acquisition.AuxOutput.AuxMode"
-REF_VBS = "app.Acquisition.Horizontal.ReferenceClock"
 _NUM = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
 
 
@@ -76,7 +76,7 @@ def read(q, model, role="master"):
     out["pm"] = PM.read_setup(q, model) + [{"on": False, "src1": "C1", "src2": PM.NONE, "level": "", "param": "MAX"}
                                            for _ in range(PM.NP - PM.inst_max(model))]
     sync = {}
-    for k, expr in (("aux_out", AUX_VBS), ("ref_clock", REF_VBS)):
+    for k, expr in (("aux_out", AUX_VBS),):
         try:
             sync[k] = _vbs(q(f"VBS? 'return={expr}'"))
         except Exception:  # noqa: BLE001
@@ -165,8 +165,6 @@ def write(w, q, cfg, log=print):
         w(f"TRIG_SELECT EDGE,SR,{src},HT,OFF")
         w(f"{src}:TRIG_LEVEL {lv:.6g}")
         w(f"{src}:TRIG_SLOPE POS")
-    if sy.get("ref10m"):
-        w(f"VBS '{REF_VBS} = \"{'INT' if cfg.get('role') == 'master' else 'EXT'}\"'")
     slots = PM.parse(cfg.get("pm") or [], model, n)
     bad += PM.setup(w, q, slots, PM.inst_max(model), log=log)
     return bad
