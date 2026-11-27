@@ -1,0 +1,93 @@
+{
+ "note": "設計值，非正式規格",
+ "rails": [
+  {
+   "ch": "VIN",
+   "nom": 12.0,
+   "min": 11.4,
+   "max": 13.2,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "VBUS",
+   "nom": 12.0,
+   "min": null,
+   "max": null,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "BUSPG",
+   "nom": 1.8,
+   "min": null,
+   "max": null,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "CORE",
+   "nom": 0.84,
+   "min": 0.8443,
+   "max": 0.8703,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "DDRVPP",
+   "nom": 2.5,
+   "min": 2.4629,
+   "max": 2.5439,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "GPIO",
+   "nom": 1.8,
+   "min": 1.772,
+   "max": 1.8298,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "DDRIO",
+   "nom": 1.2,
+   "min": 1.1874,
+   "max": 1.2126,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "PHYIO",
+   "nom": 1.2,
+   "min": null,
+   "max": null,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "NFIO",
+   "nom": 1.2,
+   "min": 1.1874,
+   "max": 1.2126,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "NFCORE",
+   "nom": 2.5,
+   "min": 2.4632,
+   "max": 2.5168,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "RSTn",
+   "nom": 1.8,
+   "min": null,
+   "max": null,
+   "tol_pct": null,
+   "unit": "V"
+  }
+ ]
+}

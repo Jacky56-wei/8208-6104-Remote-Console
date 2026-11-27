@@ -1,0 +1,39 @@
+{
+  "note": "公開輸入預設（form-factor input）。與 dut_power 設計表分開標示；不是內部 rail 的正式規格，也不臆造未找到出處的上下限。",
+  "U2": {
+    "label": "U.2／U.3 公開輸入預設",
+    "rails": [
+      {
+        "ch": "VIN",
+        "nom": 12.0,
+        "min": 11.04,
+        "max": 12.96,
+        "tol_pct": 8,
+        "unit": "V",
+        "source": "SFF-8639 / U.2 12V 公開預設 ±8%（本工具預設；與設計表 VIN 11.4–13.2 不同）"
+      }
+    ],
+    "notes": [
+      "3.3Vaux：待填（未在 Autotest_tool 找到可引用的公開上下限，不臆造）",
+      "Autotest u2tools/rail/inrush.py 另有 Host 12V −6%~+8%（11.28–12.96 V）使用者判定標準，非正式 SFF 條文，不自動當 PASS/FAIL",
+      "PCIe CEM tPVPERL（電源有效到 PERST# 釋放）通常 ≥100 ms 是主機要求，非 DUT RSTn 延遲規格，不自動判定"
+    ]
+  },
+  "M2": {
+    "label": "M.2 公開輸入預設",
+    "rails": [
+      {
+        "ch": "VIN",
+        "nom": 3.3,
+        "min": 3.135,
+        "max": 3.465,
+        "tol_pct": 5,
+        "unit": "V",
+        "source": "PCIe M.2 / CEM 3.3V ±5% 公開預設（與設計表 VIN 範圍相同，仍分開標示）"
+      }
+    ],
+    "notes": [
+      "IBUS／inrush max：待填（Autotest 僅有 MP5519 預充電流 150 mA 設計註記，非正式上限）"
+    ]
+  }
+}

@@ -1,0 +1,97 @@
+{
+ "seq": 3,
+ "time": "2026-11-27T23:41:20.574",
+ "slave_triggered": true,
+ "idn": {
+  "6104B": "LECROY,HDO6104B,SIM0000,MAUI (模擬)",
+  "8208HD": "LECROY,WR8208HD,SIM0000,MAUI (模擬)"
+ },
+ "trig": "觸發：主 C8 NEG 0.9 V → Aux Out → 輔 EXT",
+ "gap_before": "",
+ "channels": {
+  "8208HD": [
+   [
+    1,
+    "CORE"
+   ],
+   [
+    2,
+    "DDRVPP"
+   ],
+   [
+    3,
+    "GPIO"
+   ],
+   [
+    4,
+    "DDRIO"
+   ],
+   [
+    5,
+    "PHYIO"
+   ],
+   [
+    6,
+    "NFIO"
+   ],
+   [
+    7,
+    "NFCORE"
+   ],
+   [
+    8,
+    "RSTn"
+   ]
+  ],
+  "6104B": [
+   [
+    1,
+    "VIN"
+   ],
+   [
+    2,
+    "VBUS"
+   ],
+   [
+    3,
+    "BUSPG"
+   ],
+   [
+    4,
+    "IBUS"
+   ]
+  ]
+ },
+ "sequencing_verdict": "FAIL",
+ "arb": {
+  "sweep_mode": "each",
+  "channels": [
+   {
+    "template": "ONOFFON",
+    "template_name": "Instant ON-OFF-ON",
+    "von": "12",
+    "t0": "2ms",
+    "toff": "1ms/2ms/5ms",
+    "t1": "20ms",
+    "n": "1",
+    "sweep": "OFF 時間 5ms",
+    "ch": 3,
+    "label": "VIN 12V",
+    "shape": "UDEF",
+    "duration_s": 0.027,
+    "repeat": 1,
+    "scpi": [
+     "ABOR:TRAN (@3)",
+     "ARB:FUNC:TYPE VOLT,(@3)",
+     "ARB:FUNC:SHAP UDEF,(@3)",
+     "ARB:VOLT:UDEF:LEV 12,0,12,(@3)",
+     "ARB:VOLT:UDEF:DWEL 0.002,0.005,0.02,(@3)",
+     "ARB:VOLT:UDEF:BOST 0,0,0,(@3)",
+     "ARB:COUN 1,(@3)",
+     "ARB:TERM:LAST ON,(@3)",
+     "TRIG:ARB:SOUR BUS"
+    ]
+   }
+  ]
+ }
+}

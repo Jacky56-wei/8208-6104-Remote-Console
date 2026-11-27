@@ -75,7 +75,7 @@ def _ends(y):
 
 
 def detect_direction(waves, rails=None):
-    """各電壓 rail 頭尾平均比較 → "up" / "down"（多數決；沒得比 → "up"）"""
+    """各電壓 rail 頭尾平均比較 → "up" / "down"（多數決；沒得比 → "up"）。頭尾一樣但中間掉下去 / 升上來 → 看第一個事件"""
     up = down = 0
     for r in rails or default_rails():
         if r["kind"] == "current" or not r.get("on", True):
@@ -84,11 +84,16 @@ def detect_direction(waves, rails=None):
         nom = float(r.get("nom") or 0.0)
         if w is None or nom <= 0:
             continue
-        a, b = _ends(np.asarray(w[1], float))
+        y = _smooth(np.asarray(w[1], float))
+        a, b = _ends(y)
         if b - a > 0.3 * nom:
             up += 1
         elif a - b > 0.3 * nom:
             down += 1
+        elif a > 0.7 * nom and float(np.min(y)) < 0.3 * nom:     # 高 → 掉 → 回來（ARB ON-OFF-ON / Brownout）：先下電
+            down += 1
+        elif a < 0.3 * nom and float(np.max(y)) > 0.7 * nom:     # 低 → 上 → 掉（Ramp 整段都在畫面內）：先上電
+            up += 1
     return "down" if down > up else "up"
 
 

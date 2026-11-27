@@ -1,0 +1,35 @@
+{
+  "note": "時序設計參考，來自 Autotest_tool origin/main u2core/designspec.py（SOFTSTART_RANGE_MS / M2_SOFTSTART_RANGE_MS / M2_RSTN_DELAY_MS / RSTN_RELEASE_TXT）。設計值，非正式規格；Autotest 原文是「只記錄」，不改正式判定。pwrseq 的 rise／fall／Δt 預設空白（使用者自填）。",
+  "U2_12V_PowerIC_DesignSpec": {
+    "form": "U2",
+    "softstart_ms": {
+      "CORE": [0.86, 1.02],
+      "DDRVPP": [1.10, 1.10],
+      "GPIO": [1.10, 1.10],
+      "DDRIO": [1.5, 1.5],
+      "NFIO": [1.7, 1.7],
+      "NFCORE": [1.7, 1.7],
+      "PHYIO": [2.2, 2.2]
+    },
+    "softstart_src": "u2core.designspec.SOFTSTART_RANGE_MS（上電時序設計圖，11-09；設計值，只記錄）",
+    "seq_order_up": [["VIN"], ["CORE"], ["DDRVPP"], ["GPIO"], ["DDRIO", "NFIO", "NFCORE", "PHYIO"]],
+    "rstn_delay_ms": {"typ": 14.0, "min": null, "max": null, "src": "designspec.RSTN_RELEASE_TXT：最後一顆 DC/DC 之後 RESET_N release（標示 ~14 ms）；設計值，只記錄"},
+    "inrush_ibus_max_a": null
+  },
+  "M2_3V3_PowerIC_DesignSpec": {
+    "form": "M2",
+    "softstart_ms": {
+      "CORE": [0.25, 0.40],
+      "PHYIO": [0.25, 0.40],
+      "DDRIO": [0.25, 0.40],
+      "NFCORE": [0.25, 0.40],
+      "DDRVPP": [0.225, 0.225],
+      "NFIO": [1.0, 1.0],
+      "GPIO": [1.0, 1.0]
+    },
+    "start_ms": {"CORE": 0.75, "PHYIO": 0.75, "DDRVPP": 2.0, "DDRIO": 3.0, "NFCORE": 3.25},
+    "softstart_src": "u2core.designspec.M2_SOFTSTART_RANGE_MS／M2_START_MS（RT5147WSC-01 POR，2026-11-27；設計值，只記錄）",
+    "rstn_delay_ms": {"typ": 8.0, "min": null, "max": null, "src": "designspec.M2_RSTN_DELAY_MS = 8.0（RT5147 POR；設計值，只記錄）"},
+    "inrush_ibus_max_a": null
+  }
+}

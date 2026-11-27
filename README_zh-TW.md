@@ -3,8 +3,8 @@
 主 **WaveRunner 8208HD（MASTER，8 CH）** ＋ 輔 **HDO6104B（SLAVE，4 CH）**：
 觸發設定、bus name、P1–P24 量測、Auto scale、對時、Aux Out → EXT 主從觸發，兩台**實圖（SCREEN_DUMP）**同時看，波形存到中控電腦。
 
-> **目前狀態：預設 = 示範模式（模擬示波器，`SimScope`）**，整個流程（連線 → 背景設定 → arm → 觸發 → 讀 → 存 → 上 / 下電時序 → 斷線重連）
-> 都用模擬示波器跑過；畫面上的示波器圖是 **PLACEHOLDER 示意圖**。`--real` 接實機（USB VISA），**尚未實機測試**。
+> **目前狀態：預設 = 示範模式（模擬示波器 `SimScope` ＋ 模擬 N6705 `SimN6705`）**，整個流程（連線 → 背景設定 → arm → N6705 ARB → 觸發 → 讀 → 存 → 上 / 下電時序 → 斷線重連）
+> 都用模擬儀器跑過；畫面上的示波器圖是 **PLACEHOLDER 示意圖**。`--real` 接實機（USB VISA），**尚未實機測試**。
 
 ## 畫面
 
@@ -15,7 +15,14 @@
 | `screenshots/ui_review_settings_scrolled.png` | 左欄捲到下方：P1–P24、存檔 |
 | `screenshots/ui_capture_paused.png` | 連續擷取中拔掉 6104B USB（示範）：6104B 紅燈、「USB 中斷 — 背景重連中」、擷取 **暫停** |
 | `screenshots/ui_seq_powerup.png` / `ui_seq_powerdown.png` | 「上 / 下電時序」分頁：表格（順序、上 / 下電時間、10↔90 % 時間、slew rate、延遲、PASS / FAIL）＋ 時序圖 |
+| `screenshots/ui_1080p.png` | **1920×1080** 畫面（視窗約 1920×1040，留工作列）：最上方 **DUT 規格**（U.2／M.2＋機種下拉＋總判定）、① 單列連線狀態、② 預設觸發 **C8 RSTn 0.9 V**、右欄上下實圖縮放到可視區 |
+| `screenshots/ui_arb_RAMP.png` / `ui_arb_BROWNOUT.png` / `ui_arb_ONOFFON.png` / `ui_arb_rstn.png` | ⑧ N6705 ARB：**一套共用範本**套到「一個」輸出通道（CH1 / CH3 大按鈕選擇，**預設 CH3 VIN 12V**）；三種範本是大按鈕（選中高亮）；斜率跟範本走（Ramp ↑ / Brownout·ON-OFF-ON ↓），觸發主 **C8 RSTn**；CH2 / CH4 在進階裡也可選同一個範本；Linux NVMe rescan 預設關閉 |
+| `screenshots/ui_arb_seq_onoffon.png` | ARB ON-OFF-ON 擷取後的「上 / 下電時序」分頁 |
 | `screenshots/ui_settings_capture_seq.png` | 左欄 ⑥ 連續擷取（N 次、進度）、⑦ 上電時序設定（每條 rail 門檻、上 / 下電延遲限制） |
+| `screenshots/ui_folded.png` | 子視窗收合示範：左欄部分卡片（③④⑥）收合只留 ▸ 標題；右欄實圖與紀錄同時展開、中間可拉分隔條；時序 / 合成波形收合 |
+| `screenshots/ui_spec_U2.png` | 最上方選 **U.2／U.3（VIN 12 V）**＋機種 `U2_12V_PowerIC_DesignSpec`、總判定；⑨／右欄是實測 vs 設計範圍表（設計值，非正式規格；公開輸入 12V ±8% 另列）；N6705 CH3 標稱為 12 V |
+| `screenshots/ui_spec_M2.png` | 最上方選 **M.2（VIN 3.3 V）** 自動換 `M2_3V3_PowerIC_DesignSpec`，內部 rail 電壓跟著設計表變；N6705 CH3 標稱改成 3.3 V |
+| `screenshots/ui_nvme_line.png` | 啟用 Linux NVMe rescan 後，① 連線列出現 **Linux 10.0.0.50**（綠燈）；① 下方一行碟機資訊：`nvme0n1 ｜ 型號 ｜ SN ｜ 容量 ｜ FW ｜ Gen5 x4 ｜ PASS`；完整表仍在可收合的認碟卡 |
 
 ## 畫面存檔
 
@@ -35,7 +42,7 @@
   → 等輔跟著觸發（≤ 3 s，沒觸發 → 紀錄提醒檢查 BNC，照存主的）→ 兩台 WaitUntilIdle → 讀實圖、波形、P 值 → 存
 - 每次一個序號資料夾：`<存到>\<前綴>_<日期時間>_連續\0001_210012\0001_畫面_上下.png`、`0001_主_8208HD_C1_CORE.trc / .csv`、
   `0001_pmeas.csv`、`0001_上電時序.csv / .png`（或 `下電時序`）、`0001_info.json`
-- 同一個資料夾的 **`summary.csv`**：每次一列（序號、觸發時間、上電 / 下電、輔有沒有觸發、時序判定、順序、每條 rail 延遲與 slew rate、每個 P 值、斷線備註）
+- 同一個資料夾的 **`summary.csv`**：每次一列（序號、觸發時間、上電 / 下電、輔有沒有觸發、時序判定、順序、**規格／電源設計表／規格總判定／規格明細**、每條 rail 延遲與 slew rate、每個 P 值、斷線備註）
 - 進度：⑥ 進度條 ＋「n / N · 最後觸發 hh:mm:ss · 狀態（arm 中 / 等觸發 / 讀取存檔中 / ⏸ 暫停）」，工具列右上狀態也一起顯示
 - 範例輸出：`samples/連續擷取_示範/`（2 次：上電 ＋ 下電）
 
@@ -55,14 +62,58 @@
 - 背景重試，退避 1、2、4、8、15、30 s；重連成功 → 先重新做背景設定（對時、主 AUX OUT / 輔 EXT、bus name、**上次「寫入儀器設定」的內容**；沒寫過才做 Auto scale）→ 才標回已連線
 - 閒置時每 3 s 心跳（`*OPC?`；即時更新開著就用 SCREEN_DUMP）→ 沒在擷取也會發現被拔
 - 連續擷取中斷線 → **暫停**，重連後 **重做這一次**（不跳號），空檔寫紀錄與 summary 備註；所有事件寫紀錄分頁 ＋ log 檔
-- 示範：① 每台有「模擬拔 USB 5 s（示範）」按鈕；或 `--unplug 6104B:4@3`（3 s 後拔 6104B 4 s）
+- 示範：⚙ 位址 / 進階 裡每台有「模擬拔 USB 5 s（示範）」按鈕；或 `--unplug 6104B:4@3`（3 s 後拔 6104B 4 s）
+
+## ⑧ N6705 ARB 啟動＋擷取（`arbtpl.py`、`n6705.py`）
+
+不用編點，三種**參數式範本**做成大按鈕（選中高亮），**範本與參數共用一套**，套到「一個」選中的 N6705 輸出通道（通常只會用一個）。上面用大按鈕選 **CH1 或 CH3**（**預設 CH3 VIN 12V**）；CH2 / CH4 在「進階」裡也可選（仍是同一套範本）。沒選到的通道輸出不動：
+
+| 範本 | 參數 | 下載成 |
+|---|---|---|
+| **Ramp** | 起始 V、結束 V、延遲、上升時間、停留、下降時間、結束停留、重複 | N6705 原生 Trapezoid（`ARB:FUNC:SHAP TRAP`） |
+| **Brownout margin** | 標稱 V、**掉到**（V 或 % margin，可掃描 `-5%/-10%/-20%`）、掉落時間、下降 / 回升時間、前段停留、間隔、重複 | 單一準位 = Trapezoid（同 `arbmodule.from_powercut`）；「全部放在同一個 ARB」= 各段串成 User Defined（`arbmodule.merge`） |
+| **Instant ON-OFF-ON** | ON 準位、先 ON 停留、**OFF 時間**（可掃描 `1ms/2ms/5ms`）、再 ON 停留、重複 | User Defined 3 點（ON → 0 V → ON，結束停在最後值） |
+
+- 數值可帶單位（`2ms`、`100u`、`12 V`；`arbmodule.parse_num`）；每個掃描值都先用 `arbmodule.validate` 檢查（N6705 點數 / dwell / 電壓上限），有錯在卡片紅字顯示、不會下載
+- **即時預覽**：改任何參數 0.25 s 後重畫（掃描值疊圖），下面一行顯示形狀、點數、長度
+- 掃描：**每次擷取換下一個值**（預設；序號 1 → 第 1 個值…）或全部放在同一個 ARB；**循環 N 次** → 總擷取次數 = N × 掃描值數（0 = 直到 ■ 停止）
+- 每次流程：輔 arm → 主 arm → 下載 ARB（`ABOR:TRAN` → 形狀 / 參數 → `ARB:COUN` → `ARB:TERM:LAST ON` → `TRIG:ARB:SOUR BUS` → `SYST:ERR?` / `*OPC?`）
+  → `OUTP ON` → `INIT:TRAN (@選中的那一個通道)` → `*TRG` 開始 → 等主觸發（逾時 = ARB 長度 + 1 s）→ 讀 / 存
+- 主觸發預設 **C8 RSTn**（準位 0.9 V = 50 % × 1.8 V）；斜率跟範本走（Ramp = Rising，Brownout / Instant ON-OFF-ON = Falling），仍可手動改。輔仍走主 Aux Out → EXT。
+- 每次 ARB 擷取（含每個掃描值）都用 **⑦ 同一套**上 / 下電時序：每條 rail 的 **10↔90 % 時間**、**slew rate（V/ms）**、對參考 rail（VIN / RSTn）的 **Δt**；畫面切到「上 / 下電時序」表＋圖，並寫入該次時序 CSV / PNG 與 `summary.csv`
+- **ARB 跑完主沒觸發**（例淺 Brownout 沒掉到 UVLO、**RSTn 沒跳**）→ summary 記一列「未觸發」＋ 掃描值，換下一個值（= margin 結果：哪個準位開始 reset）
+- info.json 加 `arb`（選中通道、範本、參數、這次的掃描值、形狀、長度、送出的 SCPI）；summary.csv 加「**ARB 通道** / ARB 範本 / ARB 掃描值 / ARB 參數」
+- **安全中止**：■ 停止、擷取錯誤、關視窗 → `ABOR:TRAN` → `OUTP OFF`（或選「維持最後電壓」）；卡片 **⛔ N6705 安全中止** 隨時可按
+- N6705 也在 ① 儀器連線：背景自動連線 ＋ USB 自動重連（同示波器的 Link）；連線後只做 `*CLS` 與對時（`u2core.timesync`），**不動輸出**
+- 示範：模擬 N6705（`SimN6705`）的 VIN 輸出帶動模擬 DUT（VIN ≥ 9.6 V 依序上電、< 9.0 V 依序下電），主觸發看 **C8 RSTn** 是否過門檻；
+  `--arb 1 --arb-tpl BROWNOUT` 自動跑一次。範例輸出：`samples/ARB_Brownout_示範/`（-10 %、-20 % RSTn 沒跳 → 未觸發，-50 % 觸發）、`samples/ARB_ON-OFF-ON_示範/`
+- **Linux NVMe rescan（選用，預設關閉）**：⑧ 最下方勾選才展開（主機 / 帳號／密碼、認碟表）；沒勾不佔空間、不連線、**不 import paramiko**。啟用後 ① 連線列加 **Linux <主機 IP>**（綠＝已連線、灰＝待命／連線中、紅＝失敗並背景重連；tooltip 含主機名稱、核心、帳號、上次檢查），主頁 ① 下方出現**一行**碟機資訊（`nvme0n1 ｜ 型號 ｜ SN ｜ 容量 ｜ FW ｜ Gen4 x4 ｜ PASS`；多顆顯示顆數＋第一顆，其餘在 tooltip）。每次擷取或 ↻ rescan 會更新；完整 Treeview 仍在可收合的 NVMe 認碟卡。用 `nvme list -o json`（沒有則 sysfs + lsblk）列出裝置，寫紀錄與 `summary.csv`。示範模式為模擬資料。`--nvme` 可在示範裡立刻啟用。
+
+
+## DUT 規格（最上方固定列）＋ ⑨ 設計規格判比表
+
+跟隨 **Autotest_tool**（`U2_TOOL_DIR`／`u2core`）的慣例，不另造一套機種表。**U.2／M.2 選擇、機種／電源設計表下拉、總判定**放在左欄最上方、① 儀器連線之上的固定列（不隨左欄捲動、不收合）。⑨ 與右欄「設計規格判比」是可收合的對照表。
+
+- **DUT 規格**（`u2core.dutspec`）：U.2／U.3（VIN 12 V）或 M.2（VIN 3.3 V）。選了會用 `powerprofile.match_vin` 自動換對應的電源設計表，並把 **N6705 CH3（VIN）標稱**改成 12 V 或 3.3 V，ARB Ramp／Brownout／ON-OFF-ON 的準位跟著改。
+- **機種** = Autotest 的「電源設計表」（`u2core.powerprofile.names()`），不是一長串 SSD SKU。隨附兩份與 Autotest `origin/main` `dut_power/` **同檔**：
+  - `U2_12V_PowerIC_DesignSpec`（EQ1 U.2 12 V Power IC 設計表）
+  - `M2_3V3_PowerIC_DesignSpec`（PJ2-GW3T84P + RT5147WSC-01 POR；VIN 3.3 V ±5 %）
+- JSON 格式與欄位（`ch / nom / min / max / tol_pct / unit`）與 `u2core.powerprofile` 相同。可編輯、另存到使用者目錄（`%APPDATA%/U2TestSuite/dut_power/`），**不覆寫隨附檔**。
+- 電壓判比重用 `powerprofile.rng` + `designspec.compare` 的句子（「設計範圍內」／「低於設計 min」／「高於設計 max」）；本工具對應到畫面與 `summary.csv` 的 **PASS／FAIL／N/A**，並標明「設計值，非正式規格」。沒有 min–max 的軌（U.2 PHYIO、VBUS、BUSPG、RSTn、IBUS…）為 **待填**，不臆造。
+- **公開輸入**另列、不與設計表混寫：U.2 12V ±8%（SFF-8639 公開預設，11.04–12.96 V；設計表 VIN 是 11.4–13.2）、M.2 3.3V ±5%（PCIe M.2／CEM）。
+- 時序 soft-start／RSTn typ 來自 `u2core.designspec`（只記錄，不計入總判定）；⑦ 使用者自己填的延遲限制仍會 PASS／FAIL 並計入總判定。
+- `U2_TOOL_DIR` 的 Autotest 若已有 `u2core.powerprofile`／`dutspec`／已接設計表的 `designspec.compare`，直接 import；否則用本工具隨附副本與相同邏輯。
+- 指令：`--form U2|M2`、`--profile 名稱`。
+
 
 ## 版面
 
-- **工具列**：▶ 擷取＋存檔、■ 停止、⟳ 實圖即時更新、📷 存上下實圖、結果資料夾 / 匯出；右邊主 / 輔觸發狀態
+- **視窗**：針對 1920×1080，預設約 **1920×1040**（留工作列）；Windows 會再最大化。左欄設定可捲動，右欄上下實圖依可視區縮放。
+- **子視窗可收合、拉移**：①–⑧ 設定卡、右欄實圖 / 合成波形 / 時序表＋圖 / P 量測 / 存檔結果 / 紀錄 / NVMe 都是子視窗。點標題列 **▾/▸** 展開或收合；**拖標題**可改上下順序；右欄展開的子視窗之間、以及時序「表 / 圖」、還有左右欄之間，都可用 **分隔條**拉大小；標題列 **⧉** 可拆成獨立視窗（再按一次或關窗放回）。收合狀態、順序、分隔條位置寫在 `%APPDATA%\scope_wave_saver\ui_layout.json`（Linux：`~/.config/scope_wave_saver/ui_layout.json`）。
+- **工具列**：▶ 擷取＋存檔、■ 停止、⚡ ARB＋擷取、⟳ 實圖即時更新、📷 存上下實圖、結果資料夾 / 匯出；右邊主 / 輔觸發狀態
 - **工具列 ⤓ 讀回儀器設定 / ⤒ 寫入儀器設定**（兩台 / 主 / 輔）：觸發（來源 / 準位 / 斜率 / 模式）、時基（T/div、Delay）、通道（開關、V/div、Offset、bus name）、P1–P24；主 / 輔同步用固定值一併寫入（主 AUX OUT = Trigger Out、輔 EX10 / 0.5 V / ↑；不碰 10 MHz Ref In/Out）（`settings.py`；寫入前先檢查，不支援的不送）
-- **① 儀器連線**：只顯示連線狀態。開程式自動連線；對時（中控電腦時間）與 Auto scale 在背景自動做，只寫紀錄（紀錄分頁 ＋ `桌面\scope waveform\scope_wave_saver.log`），**失敗才**在該台下方顯示紅字
-- **② 觸發設定（MASTER 觸發通道 / 準位 / 斜率）**：MASTER 選 8208HD / 6104B；觸發通道（C1 CORE … C8 RSTn）、準位 V、斜率 ↑ Rising / ↓ Falling / ↕ Either、模式、T/div、Delay；
+- **① 儀器連線**：單列狀態條（色點 ＋ 8208HD / 6104B / N6705）。開程式自動連線；VISA 位址收在 **⚙ 位址 / 進階**。對時與 Auto scale 在背景自動做，只寫紀錄（紀錄分頁 ＋ `桌面\scope waveform\scope_wave_saver.log`），**失敗 / 斷線才**顯示紅字
+- **② 觸發設定（MASTER 觸發通道 / 準位 / 斜率）**：MASTER 選 8208HD / 6104B；**預設 C8 RSTn、準位 0.9 V**；斜率 ↑ Rising / ↓ Falling / ↕ Either（⑧ 換範本會跟著改，仍可手動改）、模式、T/div、Delay；
   主 / 輔同步（接線：主 8208HD AUX OUT ──BNC── 輔 6104B EXT）：主 AUX OUT = Trigger Out、輔 EX10、0.5 V、↑，連線後背景自動設，輔時基跟主一樣（不用 10 MHz Ref In/Out）；UI 不顯示，失敗才顯示
 - **③ 通道 ＋ bus name**：主 C1–C8 = CORE、DDRVPP、GPIO、DDRIO、PHYIO、NFIO、NFCORE、RSTn；輔 C1–C4 = VIN、VBUS、BUSPG、IBUS（電流 A）
 - **④ 量測 P1–P24（每台）**：每列標「示波器」或「PC 計算」，寫入前列出會改 PC 計算的列

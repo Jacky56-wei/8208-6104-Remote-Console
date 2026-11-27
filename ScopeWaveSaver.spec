@@ -12,8 +12,9 @@ if not os.path.isdir(os.path.join(TOOL, "u2core")):
 U2 = ["u2core", "u2core.alias", "u2core.appdirs", "u2core.autoconn", "u2core.breathbar", "u2core.chartfit",
       "u2core.exporter", "u2core.instruments", "u2core.pagetpl", "u2core.robust", "u2core.scope8208",
       "u2core.scopelabel", "u2core.scopesync", "u2core.shared", "u2core.sshui", "u2core.theme", "u2core.ui",
-      "u2core.winfix", "u2core.visapool", "u2core.scopeext", "u2core.scopescale", "u2core.timesync"]
-hidden = U2 + ["scope_wave_saver.gui", "scope_wave_saver.capture", "scope_wave_saver.sequencing", "scope_wave_saver.link", "matplotlib.backends.backend_agg", "matplotlib.backends.backend_tkagg", "PIL.ImageTk", "PIL._tkinter_finder", "pyvisa"]
+      "u2core.winfix", "u2core.visapool", "u2core.scopeext", "u2core.scopescale", "u2core.timesync",
+      "u2core.arbmodule", "u2core.arbseq"]
+hidden = U2 + ["scope_wave_saver.gui", "scope_wave_saver.capture", "scope_wave_saver.sequencing", "scope_wave_saver.link", "scope_wave_saver.arbtpl", "scope_wave_saver.n6705", "matplotlib.backends.backend_agg", "matplotlib.backends.backend_tkagg", "PIL.ImageTk", "PIL._tkinter_finder", "pyvisa"]
 try:
     hidden += collect_submodules("pyvisa_py")
 except Exception:  # noqa: BLE001
