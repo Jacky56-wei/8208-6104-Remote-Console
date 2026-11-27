@@ -31,6 +31,7 @@ from . import pmeas as PM
 from . import sequencing as SQ
 from .lecroy import parse_wavedesc
 from .link import Disconnected
+from .speccmp import SPEC_CSV
 from .rails import SLAVE_DEF
 
 POLL_S = 0.015
@@ -429,7 +430,7 @@ class Capture:
         with open(p, "w", encoding="utf-8") as f:
             json.dump(info, f, ensure_ascii=False, indent=1)
         files.append(p)
-        self._summary(seq, t_trig, s_ok, folder, sq_rows, verdict, pm_rows, len(files))
+        self._summary(seq, t_trig, s_ok, folder, sq_rows, verdict, pm_rows, len(files), waves)
         self._gap_note = ""
         self.log(f"✓ 第 {seq}{'' if n_tot <= 0 else f'/{n_tot}'} 次 {t_trig:%H:%M:%S}：存 {len(files)} 個檔 → {folder}"
                  + ("" if s_ok else "（輔未觸發）") + f"；{dtx}" + (f"時序 {verdict}" if verdict else ""))
@@ -438,7 +439,7 @@ class Capture:
                 "verdict": verdict, "pm_rows": pm_rows, "slave_ok": s_ok, "direction": SQ.direction_of(sq_rows),
                 "nvme": getattr(self, "_nvme_last", None)}
 
-    def _summary(self, seq, t_trig, s_ok, folder, sq_rows, verdict, pm_rows, nfiles):
+    def _summary(self, seq, t_trig, s_ok, folder, sq_rows, verdict, pm_rows, nfiles, waves=None):
         path = os.path.join(self.run_dir, "summary.csv")
         srt = sorted(sq_rows, key=lambda x: (x["model"] != SLAVE_DEF, x["ch"]))
         # 與 ⑦ 同一套：延遲（對參考 = Δt）、10↔90 % 時間、slew rate
@@ -450,6 +451,7 @@ class Capture:
             nvme_cols = ["NVMe 數", "NVMe 裝置", "NVMe 型號", "NVMe 序號", "NVMe 容量", "NVMe 韌體", "NVMe BDF", "NVMe Link"] \
                 if (self.cfg.get("nvme") or {}).get("on") else []
             self._sum_cols = ["序號", "觸發時間", "方向", "輔觸發", "時序判定", "順序", "檔案數", "資料夾", "備註"] + \
+                list(SPEC_CSV) + \
                 (["ARB 通道", "ARB 範本", "ARB 掃描值", "ARB 參數"] if self._arb_on() else []) + nvme_cols + rail_cols + pm_cols
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 csv.writer(f).writerow(self._sum_cols)
@@ -464,11 +466,22 @@ class Capture:
                 "" if x.get("slew") is None else f"{x['slew']:.5g}"
         d.update(self._arb_cols())
         d.update(self._nvme_cols())
+        d.update(self._spec_cols(waves, sq_rows, pm_rows))
         for r in pm_rows:
             v = r["scope"] if r["scope"] is not None else r["pc"]
             d[f"{r['model']} {r['label']}"] = "" if v is None else f"{v:.6g}"
         with open(path, "a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow([d.get(k, "") for k in self._sum_cols])
+
+    def _spec_cols(self, waves, sq_rows, pm_rows):
+        """⑨ 設計規格判比 → summary.csv 四欄（規格／電源設計表／規格總判定／規格明細）。"""
+        fn = self.cfg.get("spec_compare")
+        if not callable(fn):
+            return {k: "" for k in SPEC_CSV}
+        try:
+            return fn(waves, sq_rows, pm_rows) or {k: "" for k in SPEC_CSV}
+        except Exception as e:  # noqa: BLE001
+            return {"規格總判定": "N/A", "規格明細": f"判比失敗：{type(e).__name__}: {e}"}
 
     def _arb_cols(self):
         if not self._arb_on() or not getattr(self, "_arb_info", None):
@@ -498,6 +511,7 @@ class Capture:
         d = {"序號": seq, "觸發時間": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], "方向": "未觸發",
              "輔觸發": "N", "時序判定": "", "檔案數": 0, "備註": (msg + "；" + self._gap_note).strip("；")}
         d.update(self._arb_cols())
+        d.update(self._spec_cols(None, [], []))
         if self._arb_on():
             self._nvme_last = self._nvme_after(seq)
             d.update(self._nvme_cols())
@@ -515,8 +529,8 @@ class Capture:
                 return
             nvme_cols = ["NVMe 數", "NVMe 裝置", "NVMe 型號", "NVMe 序號", "NVMe 容量", "NVMe 韌體", "NVMe BDF", "NVMe Link"] \
                 if (self.cfg.get("nvme") or {}).get("on") else []
-            self._sum_cols = ["序號", "觸發時間", "方向", "輔觸發", "時序判定", "順序", "檔案數", "資料夾", "備註",
-                              "ARB 通道", "ARB 範本", "ARB 掃描值", "ARB 參數"] + nvme_cols
+            self._sum_cols = ["序號", "觸發時間", "方向", "輔觸發", "時序判定", "順序", "檔案數", "資料夾", "備註"] + \
+                list(SPEC_CSV) + ["ARB 通道", "ARB 範本", "ARB 掃描值", "ARB 參數"] + nvme_cols
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 csv.writer(f).writerow(self._sum_cols)
         with open(path, "a", newline="", encoding="utf-8") as f:

@@ -20,6 +20,8 @@
 | `screenshots/ui_arb_seq_onoffon.png` | ARB ON-OFF-ON 擷取後的「上 / 下電時序」分頁 |
 | `screenshots/ui_settings_capture_seq.png` | 左欄 ⑥ 連續擷取（N 次、進度）、⑦ 上電時序設定（每條 rail 門檻、上 / 下電延遲限制） |
 | `screenshots/ui_folded.png` | 子視窗收合示範：左欄部分卡片（③④⑥）收合只留 ▸ 標題；右欄實圖與紀錄同時展開、中間可拉分隔條；時序 / 合成波形收合 |
+| `screenshots/ui_spec_U2.png` | ⑨ 設計規格判比：**U.2／U.3（VIN 12 V）**＋機種 `U2_12V_PowerIC_DesignSpec`；實測 vs 設計範圍 PASS／FAIL（設計值，非正式規格）；公開輸入 12V ±8% 另列；N6705 CH3 標稱為 12 V |
+| `screenshots/ui_spec_M2.png` | ⑨ 選 **M.2（VIN 3.3 V）** 自動換 `M2_3V3_PowerIC_DesignSpec`，內部 rail 電壓跟著設計表變；N6705 CH3 標稱改成 3.3 V |
 
 ## 畫面存檔
 
@@ -39,7 +41,7 @@
   → 等輔跟著觸發（≤ 3 s，沒觸發 → 紀錄提醒檢查 BNC，照存主的）→ 兩台 WaitUntilIdle → 讀實圖、波形、P 值 → 存
 - 每次一個序號資料夾：`<存到>\<前綴>_<日期時間>_連續\0001_210012\0001_畫面_上下.png`、`0001_主_8208HD_C1_CORE.trc / .csv`、
   `0001_pmeas.csv`、`0001_上電時序.csv / .png`（或 `下電時序`）、`0001_info.json`
-- 同一個資料夾的 **`summary.csv`**：每次一列（序號、觸發時間、上電 / 下電、輔有沒有觸發、時序判定、順序、每條 rail 延遲與 slew rate、每個 P 值、斷線備註）
+- 同一個資料夾的 **`summary.csv`**：每次一列（序號、觸發時間、上電 / 下電、輔有沒有觸發、時序判定、順序、**規格／電源設計表／規格總判定／規格明細**、每條 rail 延遲與 slew rate、每個 P 值、斷線備註）
 - 進度：⑥ 進度條 ＋「n / N · 最後觸發 hh:mm:ss · 狀態（arm 中 / 等觸發 / 讀取存檔中 / ⏸ 暫停）」，工具列右上狀態也一起顯示
 - 範例輸出：`samples/連續擷取_示範/`（2 次：上電 ＋ 下電）
 
@@ -85,6 +87,23 @@
 - 示範：模擬 N6705（`SimN6705`）的 VIN 輸出帶動模擬 DUT（VIN ≥ 9.6 V 依序上電、< 9.0 V 依序下電），主觸發看 **C8 RSTn** 是否過門檻；
   `--arb 1 --arb-tpl BROWNOUT` 自動跑一次。範例輸出：`samples/ARB_Brownout_示範/`（-10 %、-20 % RSTn 沒跳 → 未觸發，-50 % 觸發）、`samples/ARB_ON-OFF-ON_示範/`
 - **Linux NVMe rescan（選用，預設關閉）**：⑧ 最下方勾選才展開（主機 / 帳號／密碼、認碟表）；沒勾不佔空間、不連線、**不 import paramiko**。啟用後 ARB 每次擷取會 PCIe rescan，用 `nvme list -o json`（沒有則 sysfs + lsblk）列出 `/dev/nvmeXn1`、型號、序號、容量、韌體、PCIe BDF、Link，寫紀錄與 `summary.csv`。示範模式為模擬資料。
+
+
+## ⑨ 設計規格判比（U.2／M.2 · 電源設計表）
+
+跟隨 **Autotest_tool**（`U2_TOOL_DIR`／`u2core`）的慣例，不另造一套機種表：
+
+- **DUT 規格**（`u2core.dutspec`）：U.2／U.3（VIN 12 V）或 M.2（VIN 3.3 V）。選了會用 `powerprofile.match_vin` 自動換對應的電源設計表，並把 **N6705 CH3（VIN）標稱**改成 12 V 或 3.3 V，ARB Ramp／Brownout／ON-OFF-ON 的準位跟著改。
+- **機種** = Autotest 的「電源設計表」（`u2core.powerprofile.names()`），不是一長串 SSD SKU。隨附兩份與 Autotest `origin/main` `dut_power/` **同檔**：
+  - `U2_12V_PowerIC_DesignSpec`（EQ1 U.2 12 V Power IC 設計表）
+  - `M2_3V3_PowerIC_DesignSpec`（PJ2-GW3T84P + RT5147WSC-01 POR；VIN 3.3 V ±5 %）
+- JSON 格式與欄位（`ch / nom / min / max / tol_pct / unit`）與 `u2core.powerprofile` 相同。可編輯、另存到使用者目錄（`%APPDATA%/U2TestSuite/dut_power/`），**不覆寫隨附檔**。
+- 電壓判比重用 `powerprofile.rng` + `designspec.compare` 的句子（「設計範圍內」／「低於設計 min」／「高於設計 max」）；本工具對應到畫面與 `summary.csv` 的 **PASS／FAIL／N/A**，並標明「設計值，非正式規格」。沒有 min–max 的軌（U.2 PHYIO、VBUS、BUSPG、RSTn、IBUS…）為 **待填**，不臆造。
+- **公開輸入**另列、不與設計表混寫：U.2 12V ±8%（SFF-8639 公開預設，11.04–12.96 V；設計表 VIN 是 11.4–13.2）、M.2 3.3V ±5%（PCIe M.2／CEM）。
+- 時序 soft-start／RSTn typ 來自 `u2core.designspec`（只記錄，不計入總判定）；⑦ 使用者自己填的延遲限制仍會 PASS／FAIL 並計入總判定。
+- `U2_TOOL_DIR` 的 Autotest 若已有 `u2core.powerprofile`／`dutspec`／已接設計表的 `designspec.compare`，直接 import；否則用本工具隨附副本與相同邏輯。
+- 指令：`--form U2|M2`、`--profile 名稱`。
+
 
 ## 版面
 

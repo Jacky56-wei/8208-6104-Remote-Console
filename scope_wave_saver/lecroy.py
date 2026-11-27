@@ -306,12 +306,15 @@ def _sim_names(model):
     return NAMES[model]
 
 
-def sim_waves(model, jit=None, t0=-2e-3, t1=8e-3, n=10000, rng=None, direction="up"):
+def sim_waves(model, jit=None, t0=-2e-3, t1=8e-3, n=10000, rng=None, direction="up", vnom=None):
     """上電時序（觸發 t = 0 = 主 C8 RSTn 上升；輔 VIN 比 RSTn 早）→ {ch: (t, y)}
     direction="down"：下電（t = 0 = 主 C8 RSTn 下降；反順序：RSTn / BUSPG 先掉，VIN 最後）"""
     if direction == "down":
-        return _sim_down(model, jit, t0, t1, n, rng)
-    from .rails import NAMES, VNOM
+        return _sim_down(model, jit, t0, t1, n, rng, vnom=vnom)
+    from .rails import NAMES, VNOM as _VNOM
+    VNOM = dict(_VNOM)
+    if vnom:
+        VNOM.update(vnom)
     rng = rng or np.random.default_rng()
     jit = jit or {}
     t = np.linspace(t0, t1, n)
@@ -329,8 +332,11 @@ def sim_waves(model, jit=None, t0=-2e-3, t1=8e-3, n=10000, rng=None, direction="
     return out
 
 
-def _sim_down(model, jit, t0, t1, n, rng):
-    from .rails import NAMES, VNOM
+def _sim_down(model, jit, t0, t1, n, rng, vnom=None):
+    from .rails import NAMES, VNOM as _VNOM
+    VNOM = dict(_VNOM)
+    if vnom:
+        VNOM.update(vnom)
     rng = rng or np.random.default_rng()
     jit = jit or {}
     t = np.linspace(t0, t1, n)

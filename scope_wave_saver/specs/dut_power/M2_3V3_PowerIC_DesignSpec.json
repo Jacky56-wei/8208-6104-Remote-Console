@@ -1,0 +1,93 @@
+{
+ "note": "設計值，非正式規格（M.2 PJ2-GW3T84P 4AX schematic PDF＋RT5147WSC-01 POR，2026-11-27 使用者：以 POR 為主）：RT5147（U501，±1.5 % 全溫）B1→NFCORE P_NFVCC_2V5 2.5 V、B2→PHYIO P_SOCPHY_0V9 POR 0.91 V、B3→CORE P_SOCCORE_0V75 POR 0.78 V、B4→DDRIO P_DDRVDD2/VDDQ_1V1 1.1 V、LDO1→DDRVPP 通道量 P_DDRVDD1_1V8 1.8 V（LPDDR4 沒有 VPP）；TPS62826（VFB 594–606 mV＋1 % 分壓最差組合）U502 100k/100k→NFIO P_NFVCCQ_1V2、U503 200k/100k→GPIO P_1V8／P_VP18；VIN = M.2 3.3 V ±5 %",
+ "rails": [
+  {
+   "ch": "VIN",
+   "nom": 3.3,
+   "min": 3.135,
+   "max": 3.465,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "VBUS",
+   "nom": 3.3,
+   "min": null,
+   "max": null,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "BUSPG",
+   "nom": 1.8,
+   "min": null,
+   "max": null,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "CORE",
+   "nom": 0.78,
+   "min": 0.7683,
+   "max": 0.7917,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "DDRVPP",
+   "nom": 1.8,
+   "min": 1.773,
+   "max": 1.827,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "GPIO",
+   "nom": 1.8,
+   "min": 1.7585,
+   "max": 1.8425,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "DDRIO",
+   "nom": 1.1,
+   "min": 1.0835,
+   "max": 1.1165,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "PHYIO",
+   "nom": 0.91,
+   "min": 0.8963,
+   "max": 0.9236,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "NFIO",
+   "nom": 1.2,
+   "min": 1.1762,
+   "max": 1.2242,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "NFCORE",
+   "nom": 2.5,
+   "min": 2.4625,
+   "max": 2.5375,
+   "tol_pct": null,
+   "unit": "V"
+  },
+  {
+   "ch": "RSTn",
+   "nom": 1.8,
+   "min": null,
+   "max": null,
+   "tol_pct": null,
+   "unit": "V"
+  }
+ ]
+}

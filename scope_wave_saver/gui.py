@@ -3,7 +3,8 @@
 
 版型照 All in Test tool《UI設計風格說明.md》：u2core.theme.apply、工具列 ▶/■ + action_row、狀態列、
 UnifiedBody（左：① 儀器連線 + ②③… 設定卡片；右：執行監看）。
-子視窗（①–⑧、時序表／圖、紀錄、NVMe…）可點 ▾/▸ 收合、拖標題排序、拖分隔條改大小、⧉ 獨立視窗；狀態寫入 ui_layout.json。
+子視窗（①–⑨、時序表／圖、規格判比、紀錄、NVMe…）可點 ▾/▸ 收合、拖標題排序、拖分隔條改大小、⧉ 獨立視窗；狀態寫入 ui_layout.json。
+⑨ 設計規格判比跟隨 Autotest_tool（u2core.dutspec／powerprofile／designspec.compare；U2_TOOL_DIR 沒有就用隨附 specs/dut_power）。
 右側主畫面 = 兩部示波器「實圖」（SCREEN_DUMP）上下無縫接合：上 = 輔（SLAVE）、下 = 主（MASTER），時間格對齊。
 「合一張」可與實圖同時展開：用讀回的波形資料在 PC 重畫。存檔一律存上下實圖。
 連續擷取（capture.py）、上電時序（sequencing.py）、USB 自動重連（link.py）。
@@ -30,16 +31,17 @@ from .pmeas import MATH_MAX, NONE, PARAMS, default_rows, inst_max, parse as pm_p
 PASS_C, FAIL_C, ERR_C = ("#1a7f37", "#dafbe1"), ("#cf222e", "#ffebe9"), ("#9a6700", "#fff8c5")
 RED = "#cf222e"
 from .rails import MASTER_DEF, NAMES, NCH, SLAVE_DEF, UNIT_A, VNOM  # noqa: E402
+from . import speccmp as SC  # noqa: E402
 TITLE_M = {"8208HD": "WaveRunner 8208HD（8 CH）", "6104B": "HDO6104B（4 CH）"}
 KEY = {"8208HD": "wr8000", "6104B": "hdo6104"}
 ADDR = {"8208HD": "USB0::0x05FF::0x1023::5003N60268::0::INSTR", "6104B": "USB0::0x05FF::0x1023::5108N13350::0::INSTR"}
 COLORS = ["#F2C744", "#E0457B", "#3FA9F5", "#3BB273", "#F28C28", "#9B59B6", "#1ABC9C", "#7F8C8D"]   # LeCroy C1–C8 色系
 
 
-def _demo_waves(model, n=2000):
-    """示範：上電時序（觸發在 t = 0；同 lecroy.sim_waves）"""
+def _demo_waves(model, n=2000, vnom=None):
+    """示範：上電時序（觸發在 t = 0；同 lecroy.sim_waves）。vnom 可覆寫標稱（⑨ 選了 M.2／設計表時）。"""
     from .lecroy import sim_waves
-    return sim_waves(model, n=n)
+    return sim_waves(model, n=n, vnom=vnom)
 
 
 class WaveSaverUI(tk.Tk):
@@ -180,6 +182,7 @@ class WaveSaverUI(tk.Tk):
         self._capture_card(self._left_card("cap", "連續擷取（觸發次數）", 6))
         self._seq_card(self._left_card("seq", "上電時序（PC 計算）", 7))
         self._arb_card(self._left_card("arb", "N6705 ARB 啟動＋擷取（Ramp / Brownout margin / Instant ON-OFF-ON）", 8))
+        self._spec_card(self._left_card("spec", "設計規格判比（U.2／M.2 · 電源設計表）", 9))
         self._monitor(body)
         self.after(200, self._restore_sashes)
         self.after(400, lambda: self.body.pw.bind("<ButtonRelease-1>", lambda _e: self._persist_sash(), add="+"))
@@ -395,7 +398,7 @@ class WaveSaverUI(tk.Tk):
         src = self.v["trig_src"].get()
         parts = src.split()
         nm = parts[-1] if len(parts) >= 2 else ""
-        vnom = VNOM.get(nm)
+        vnom = self._rail_vnom(nm)
         if vnom:
             self.v["trig_level"].set(f"{vnom * 0.5:g}")
             self.v_trig_hint.set(f"V（50 % × {nm} {vnom:g} V）")
@@ -419,6 +422,7 @@ class WaveSaverUI(tk.Tk):
 
     # ---- ③ 通道＋bus name
     def _channels(self, f):
+        self._vnom_lbl = {}
         top = ttk.Frame(f)
         top.pack(fill="x")
         ttk.Label(top, text="bus name 寫到").pack(side="left")
@@ -442,7 +446,9 @@ class WaveSaverUI(tk.Tk):
                 tk.Label(t, text=f"C{i + 1}", fg=COLORS[i], bg="#FFFFFF", font=(self.fam, 10, "bold")).grid(row=rr, column=1)
                 ttk.Entry(t, textvariable=self._sv(f"nm_{m}_{i}", nm), width=12).grid(row=rr, column=2, padx=2, pady=1)
                 vn = VNOM.get(nm, 0)
-                ttk.Label(t, text=f"{vn:g}" if vn else ("電流 A" if nm in UNIT_A else "—")).grid(row=rr, column=3)
+                lb = ttk.Label(t, text=f"{vn:g}" if vn else ("電流 A" if nm in UNIT_A else "—"))
+                lb.grid(row=rr, column=3)
+                self._vnom_lbl[(m, i)] = lb
                 from .demo_scale import vdiv_for
                 ttk.Label(t, text=vdiv_for(vn)).grid(row=rr, column=4)
                 ttk.Label(t, text=f"{-3.5 * float(vdiv_for(vn).split()[0]) * (1e-3 if 'mV' in vdiv_for(vn) else 1):.3g} V"
@@ -544,7 +550,7 @@ class WaveSaverUI(tk.Tk):
         except tk.TclError:
             pass
         stack = SashStack(body.right, store=self.ui_store, group="right",
-                          defaults={"shots": 3.2, "waves": 1.6, "seqv": 2.0, "pmt": 1.0,
+                          defaults={"shots": 3.2, "waves": 1.6, "seqv": 2.0, "specv": 1.6, "pmt": 1.0,
                                     "saved": 0.8, "log": 1.1, "nvme": 1.0})
         stack.pack(fill="both", expand=True, padx=(6, 0))
         self.right_stack = stack
@@ -596,6 +602,9 @@ class WaveSaverUI(tk.Tk):
         # -- 時序（預設收合；擷取後會展開）
         seqf = self._right_card("seqv", "上 / 下電時序（表＋圖，可拉分隔條）", default_open=False, weight=2.0)
         self._seq_tab(seqf)
+        # -- ⑨ 規格判比結果（預設收合；選了機種或擷取後展開看）
+        spf = self._right_card("specv", "設計規格判比（實測 vs 電源設計表）", default_open=False, weight=1.6)
+        self._spec_tab(spf)
         # -- P 量測（預設收合）
         pf = self._right_card("pmt", "P 量測結果", default_open=False, weight=1.0)
         tv = ttk.Treeview(pf, columns=("sc", "p", "lab", "inst", "pc", "pct", "ok"), show="headings", height=8)
@@ -760,6 +769,11 @@ class WaveSaverUI(tk.Tk):
             i = int(x["ch"]) - 1
             nm = self.v.get(f"nm_{x['model']}_{i}")
             r["name"] = (nm.get().strip() if nm else "") or x["name"]
+            vn = self._rail_vnom(r["name"], r.get("nom") or 0)
+            if vn:
+                r["nom"] = vn
+                if r["kind"] == "logic" and not r.get("logic_v"):
+                    r["logic_v"] = round(0.7 * vn, 3)
             r["on"] = self.v[f"sq_on_{k}"].get() and self.v[f"en_{x['model']}_{i}"].get()
             r["lo_pct"] = fnum(f"sq_lo_{k}") or 10.0
             r["hi_pct"] = fnum(f"sq_hi_{k}") or 90.0
@@ -829,6 +843,7 @@ class WaveSaverUI(tk.Tk):
         rows = self._SQ.analyze(wv, self._rails_from_ui(), ref=o["ref"], basis=o["basis"], slave_skew_s=o["skew_s"],
                                 direction=o["direction"])
         self._seq_show(rows, wv, getattr(self, "_seq_title", ""))
+        self._spec_refresh(waves=wv, seq_rows=rows)
 
     def _seq_show(self, rows, waves, title=""):
         SQ = self._SQ
@@ -845,8 +860,363 @@ class WaveSaverUI(tk.Tk):
         SQ.draw(self.fig_seq, rows, waves, ref=self.v["seq_ref"].get(), fam=[self.fam, "Noto Sans CJK JP", "DejaVu Sans"])
         self.cv_seq.draw_idle()
 
+
+    def _rail_vnom(self, name, default=0):
+        """標稱電壓：先查目前電源設計表（同 Autotest iomap.vnom），沒有再退回 rails.VNOM。"""
+        v = SC.vnom(name)
+        if v is not None:
+            return v
+        return VNOM.get(name, default) or default
+
+    def _spec_card(self, f):
+        """⑨ 選 DUT 規格（U.2／M.2）＋ 機種（電源設計表），對照實測 PASS／FAIL。慣例同 Autotest powerprofile_ui。"""
+        tip = ttk.Label(f, text="跟隨 Autotest_tool：機種＝電源設計表（u2core.powerprofile），"
+                                "數值是「設計值，非正式規格」。公開輸入（U.2 12V ±8%／M.2 3.3V ±5%）另列。"
+                                "請確認規格：U.2＝12 V、M.2＝3.3 V，勿套錯。缺 min／max 標「待填」，不臆造。",
+                        style="U.Muted.TLabel", wraplength=780, justify="left")
+        tip.pack(anchor="w")
+        row = ttk.Frame(f)
+        row.pack(fill="x", pady=(4, 0))
+        ttk.Label(row, text="DUT 規格", style="Trig.TLabel").pack(side="left", padx=(0, 8))
+        self.v_spec_form = tk.StringVar(self, value="U2")
+        self._spec_form_btns = {}
+        for key in SC.DUT.ORDER:
+            b = tk.Button(row, text=SC.DUT.SPECS[key][1], font=(self.fam, 10, "bold"),
+                          width=22, cursor="hand2", bd=3, relief="raised",
+                          command=lambda k=key: self._apply_spec(form=k))
+            b.pack(side="left", padx=3)
+            self._spec_form_btns[key] = b
+        row2 = ttk.Frame(f)
+        row2.pack(fill="x", pady=(6, 0))
+        ttk.Label(row2, text="機種／電源設計表", style="Trig.TLabel").pack(side="left", padx=(0, 8))
+        names = SC.PP.names() or [SC.DEFAULT]
+        self.v_spec_profile = tk.StringVar(self, value=SC.PP.get() or names[0])
+        self.cb_spec_profile = ttk.Combobox(row2, textvariable=self.v_spec_profile, values=names,
+                                            state="readonly", width=36)
+        self.cb_spec_profile.pack(side="left", padx=4)
+        self.cb_spec_profile.bind("<<ComboboxSelected>>", lambda _e: self._apply_spec(profile=self.v_spec_profile.get()))
+        ttk.Button(row2, text="編輯…", style="U.Small.TButton", command=self._spec_edit).pack(side="left", padx=2)
+        ttk.Button(row2, text="另存…", style="U.Small.TButton", command=lambda: self._spec_edit(save_as=True)).pack(side="left")
+        ttk.Button(row2, text="⟳ 重判", style="U.Small.TButton", command=lambda: self._spec_refresh()).pack(side="left", padx=6)
+        self.v_spec_warn = tk.StringVar(self, value="")
+        ttk.Label(f, textvariable=self.v_spec_warn, foreground="#9a6700", wraplength=780, justify="left").pack(anchor="w")
+        self.v_spec_src = tk.StringVar(self, value="")
+        ttk.Label(f, textvariable=self.v_spec_src, style="U.Muted.TLabel", wraplength=780, justify="left").pack(anchor="w")
+        ov = ttk.Frame(f)
+        ov.pack(fill="x", pady=(4, 2))
+        self.v_spec_overall = tk.StringVar(self, value="尚未判比")
+        self.lb_spec_overall = tk.Label(ov, textvariable=self.v_spec_overall, font=(self.fam, 11, "bold"),
+                                        fg="#0E9BD8", bg="#FFFFFF", anchor="w")
+        self.lb_spec_overall.pack(side="left", fill="x", expand=True)
+        # 左欄精簡表（右欄 specv 有完整表）
+        cols = ("ch", "nom", "rng", "meas", "ok")
+        heads = ("通道", "標稱", "設計範圍", "實測", "判定")
+        tv = ttk.Treeview(f, columns=cols, show="headings", height=8)
+        for c, h, w in zip(cols, heads, (90, 56, 200, 70, 70)):
+            tv.heading(c, text=h)
+            tv.column(c, width=w, anchor="center", stretch=c == "rng")
+        for tag, fg, bg in (("PASS", "#1a7f37", "#dafbe1"), ("FAIL", "#cf222e", "#ffebe9"),
+                            ("N/A", "#656d76", "#f6f8fa"), ("REF", "#0550ae", "#ddf4ff")):
+            tv.tag_configure(tag, foreground=fg, background=bg)
+        tv.pack(fill="x", pady=(2, 0))
+        self.tv_spec_left = tv
+        self.after(350, lambda: self._apply_spec(form=getattr(self, "_want_form", None) or "U2",
+                                                 profile=getattr(self, "_want_profile", None)))
+
+    def _spec_tab(self, f):
+        hd = ttk.Frame(f)
+        hd.pack(fill="x")
+        self.v_spec_sum = tk.StringVar(self, value="")
+        ttk.Label(hd, textvariable=self.v_spec_sum, font=(self.fam, 10, "bold"), foreground="#0E9BD8").pack(side="left")
+        ttk.Button(hd, text="⟳ 重判", style="U.Small.TButton", command=lambda: self._spec_refresh()).pack(side="right")
+        self.v_spec_notes = tk.StringVar(self, value="")
+        ttk.Label(f, textvariable=self.v_spec_notes, style="U.Muted.TLabel", wraplength=900, justify="left").pack(anchor="w")
+        box = ttk.Frame(f)
+        box.pack(fill="both", expand=True)
+        cols = ("ch", "nom", "min", "max", "tol", "unit", "src", "meas", "spec", "ok")
+        heads = ("通道／項目", "標稱", "min", "max", "±%", "單位", "來源", "實測", "規格", "判定")
+        tv = ttk.Treeview(box, columns=cols, show="headings", height=12)
+        for c, h, w in zip(cols, heads, (110, 50, 60, 60, 40, 40, 200, 70, 220, 60)):
+            tv.heading(c, text=h)
+            tv.column(c, width=w, anchor="center", stretch=c in ("src", "spec"))
+        for tag, fg, bg in (("PASS", "#1a7f37", "#dafbe1"), ("FAIL", "#cf222e", "#ffebe9"),
+                            ("N/A", "#656d76", "#f6f8fa"), ("REF", "#0550ae", "#ddf4ff")):
+            tv.tag_configure(tag, foreground=fg, background=bg)
+        vsb = ttk.Scrollbar(box, orient="vertical", command=tv.yview)
+        tv.configure(yscrollcommand=vsb.set)
+        tv.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+        self.tv_spec = tv
+
+    def _style_form_btns(self):
+        cur = self.v_spec_form.get() if hasattr(self, "v_spec_form") else "U2"
+        for k, b in (getattr(self, "_spec_form_btns", {}) or {}).items():
+            on = k == cur
+            b.configure(relief="sunken" if on else "raised",
+                        bg="#0E9BD8" if on else "#FFFFFF",
+                        fg="#FFFFFF" if on else "#24292f",
+                        activebackground="#0E9BD8" if on else "#f6f8fa")
+
+    def _apply_spec(self, form=None, profile=None):
+        """選規格／機種：match_vin、套 ARB VIN、更新標稱與示範波形、重判。"""
+        if form:
+            SC.set_form(form)
+            self.v_spec_form.set(form)
+            if not profile:
+                profile = SC.PP.get()
+        if profile:
+            warn = SC.set_profile(profile)
+            self.v_spec_profile.set(profile)
+        else:
+            warn = SC.PP.vin_mismatch(SC.DUT.vin()) if SC.DUT.get() else ""
+        names = SC.PP.names()
+        if hasattr(self, "cb_spec_profile"):
+            self.cb_spec_profile.configure(values=names)
+        self._style_form_btns()
+        vin = SC.form_vin() or SC.vnom("VIN") or 12.0
+        lab = f"VIN {vin:g}V"
+        self.ARB_CH_LABEL[3] = lab
+        if hasattr(self, "_arb_lb_by_ch"):
+            self._arb_lb_by_ch[3] = lab
+            if self._arb_sel_ch() == 3 and "arb_lb" in self.v:
+                self.v["arb_lb"].set(lab)
+        if hasattr(self, "arb_ch_btns") and 3 in self.arb_ch_btns:
+            self.arb_ch_btns[3].configure(text=f"CH3　{lab}")
+        for key, var, fallback in (("arb_RAMP_v1", "arb_RAMP_v1", f"{vin:g}"),
+                                   ("arb_BROWNOUT_vn", "arb_BROWNOUT_vn", f"{vin:g}"),
+                                   ("arb_ONOFFON_von", "arb_ONOFFON_von", f"{vin:g}")):
+            if key in self.v:
+                self.v[key].set(f"{vin:g}")
+        # 通道表標稱
+        for (m, i), lb in (getattr(self, "_vnom_lbl", {}) or {}).items():
+            nm = self.v[f"nm_{m}_{i}"].get().strip() or NAMES[m][i]
+            vn = self._rail_vnom(nm, VNOM.get(nm, 0))
+            if nm in UNIT_A:
+                lb.configure(text="電流 A")
+            else:
+                lb.configure(text=f"{vn:g}" if vn else "—")
+        # ⑦ seq_rails 標稱
+        for x in getattr(self, "seq_rails", []) or []:
+            vn = self._rail_vnom(x["name"], x.get("nom") or 0)
+            if vn:
+                x["nom"] = vn
+                if x.get("kind") == "logic":
+                    x["logic_v"] = round(0.7 * vn, 3)
+        # 示範波形跟設計表標稱走（讓 M.2 畫面有對應電壓）
+        if self.demo and hasattr(self, "waves"):
+            vm = SC.demo_vnom_map()
+            self.waves = {m: _demo_waves(m, vnom=vm) for m in (MASTER_DEF, SLAVE_DEF)}
+            try:
+                self._draw()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            self._arb_changed()
+        except Exception:  # noqa: BLE001
+            pass
+        src = SC.source_report()
+        pp = src.get("powerprofile", "")
+        short = "u2core.powerprofile" if pp.startswith("u2core") else "隨附 specs/dut_power（鏡射 Autotest origin/main）"
+        self.v_spec_src.set(f"來源：{short}　目前 {SC.form_label()}／{SC.PP.get()}　VIN {vin:g} V。"
+                            f"選規格會自動 match_vin，並把 N6705 CH3 標稱改成 {vin:g} V。")
+        self.v_spec_warn.set(warn or "")
+        self.log(f"⑨ 規格：{SC.form_label()}　設計表 {SC.PP.get()}　VIN {vin:g} V"
+                 + (f"　{warn}" if warn else ""))
+        # 重算時序＋判比（_seq_recalc 會叫 _spec_refresh）
+        if hasattr(self, "tv_seq"):
+            self._seq_recalc()
+        else:
+            self._spec_refresh()
+
+    def _spec_meas(self, waves=None, seq_rows=None, pm_rows=None):
+        waves = waves if waves is not None else (self._waves_flat() if hasattr(self, "waves") else {})
+        if seq_rows is None and hasattr(self, "_SQ") and waves:
+            try:
+                o = self._seq_opts()
+                seq_rows = self._SQ.analyze(waves, self._rails_from_ui(), ref=o["ref"], basis=o["basis"],
+                                            slave_skew_s=o["skew_s"], direction=o["direction"])
+            except Exception:  # noqa: BLE001
+                seq_rows = []
+        seq_rows = seq_rows or []
+        by = {x.get("name"): x for x in seq_rows if x.get("name")}
+        meas = {}
+        rails = self._rails_from_ui() if hasattr(self, "seq_rails") else []
+        for r in rails:
+            w = waves.get((r["model"], int(r["ch"])))
+            if not w:
+                continue
+            x = by.get(r["name"]) or {}
+            kind = "current" if r.get("kind") == "current" else "rail"
+            if kind == "current" and x.get("peak") is not None:
+                meas[r["name"]] = x["peak"]
+            else:
+                meas[r["name"]] = SC.steady_mean(w[0], w[1], t_on=x.get("t_on") or x.get("t_hi"), kind=kind)
+        for r in (pm_rows or []):
+            lab = str(r.get("label") or "")
+            v = r.get("scope") if r.get("scope") is not None else r.get("pc")
+            if v is None:
+                continue
+            for nm in list(meas.keys()) + list(VNOM.keys()):
+                if nm and nm in lab and ("MEAN" in lab.upper() or "mean" in lab.lower() or "均" in lab):
+                    meas[nm] = float(v)
+                    break
+        return meas, seq_rows
+
+    def _spec_refresh(self, waves=None, seq_rows=None, pm_rows=None):
+        if not hasattr(self, "tv_spec_left") and not hasattr(self, "tv_spec"):
+            return
+        meas, seq_rows = self._spec_meas(waves, seq_rows, pm_rows)
+        result = SC.compare_measurements(meas, seq_rows=seq_rows)
+        self._spec_last = result
+        ov = result["overall_txt"]
+        if hasattr(self, "v_spec_overall"):
+            self.v_spec_overall.set(ov)
+            col = {"PASS": "#1a7f37", "FAIL": "#cf222e"}.get(result["overall"], "#656d76")
+            self.lb_spec_overall.configure(fg=col)
+        if hasattr(self, "v_spec_sum"):
+            self.v_spec_sum.set(ov)
+        if hasattr(self, "v_spec_notes"):
+            notes = "  ".join(result.get("public_notes") or [])
+            self.v_spec_notes.set(notes)
+        warn = result.get("warn") or ""
+        if hasattr(self, "v_spec_warn") and warn:
+            self.v_spec_warn.set(warn)
+
+        def _rng(r):
+            if r.get("min") is not None and r.get("max") is not None:
+                return f"{r['min']:g}–{r['max']:g}"
+            if r.get("nom") is not None:
+                return f"標稱 {r['nom']:g}"
+            return "待填"
+
+        if hasattr(self, "tv_spec_left"):
+            tv = self.tv_spec_left
+            tv.delete(*tv.get_children())
+            for r in result["rows"]:
+                tv.insert("", "end", values=(r["ch"], SC._fmt(r.get("nom"), 4), _rng(r),
+                                             SC._fmt(r.get("meas")), r["verdict"]),
+                          tags=(r["verdict"] or "N/A",))
+            if result["timing"]:
+                tv.insert("", "end", values=("── 時序參考 ──", "", "只記錄／⑦ 限制", "", ""), tags=("REF",))
+                for r in result["timing"]:
+                    tv.insert("", "end", values=(r["ch"], "", r.get("spec") or "",
+                                                 r.get("meas") or "", r["verdict"]),
+                              tags=(r["verdict"] or "N/A",))
+        if hasattr(self, "tv_spec"):
+            tv = self.tv_spec
+            tv.delete(*tv.get_children())
+            for r in result["rows"]:
+                tv.insert("", "end", values=(r["ch"], SC._fmt(r.get("nom"), 4), SC._fmt(r.get("min"), 5),
+                                             SC._fmt(r.get("max"), 5), SC._fmt(r.get("tol_pct"), 3),
+                                             r.get("unit") or "", r.get("source") or "",
+                                             SC._fmt(r.get("meas")), (r.get("spec") or "")[:48],
+                                             r["verdict"]),
+                          tags=(r["verdict"] or "N/A",))
+            if result["timing"]:
+                tv.insert("", "end", values=("── 時序參考（設計值只記錄；⑦ 限制才計總判定）──",
+                                             "", "", "", "", "", "", "", "", ""), tags=("REF",))
+                for r in result["timing"]:
+                    tv.insert("", "end", values=(f"{r['ch']} {r['item']}", "", "", "", "", "",
+                                                 r.get("why") or "", r.get("meas") or "",
+                                                 r.get("spec") or "", r["verdict"]),
+                              tags=(r["verdict"] or "N/A",))
+
+    def _spec_csv(self, waves, sq_rows, pm_rows):
+        """給 Capture 執行緒寫 summary.csv：只用波形／時序列，不讀 Tk 變數。"""
+        meas = {}
+        for x in sq_rows or []:
+            name = x.get("name")
+            if not name:
+                continue
+            if x.get("kind") == "current" and x.get("peak") is not None:
+                meas[name] = x["peak"]
+                continue
+            if not waves:
+                continue
+            w = waves.get((x.get("model"), int(x.get("ch") or 0)))
+            if w:
+                meas[name] = SC.steady_mean(w[0], w[1], t_on=x.get("t_on") or x.get("t_hi"),
+                                            kind="current" if x.get("kind") == "current" else "rail")
+        result = SC.compare_measurements(meas, seq_rows=sq_rows)
+        return SC.csv_cols(result)
+
+    def _spec_edit(self, save_as=False):
+        """編輯電源設計表（同 Autotest powerprofile_ui）：存到使用者目錄，不覆寫隨附檔。"""
+        from tkinter import simpledialog, messagebox
+        name = self.v_spec_profile.get() or SC.PP.get()
+        data = SC.PP.load(name) or {"name": name, "note": SC.NOTE, "rails": []}
+        win = tk.Toplevel(self)
+        win.title("編輯電源設計表（另存到使用者目錄，不改隨附檔）")
+        win.geometry("760x480")
+        ttk.Label(win, text="欄位同 Autotest u2core.powerprofile.FIELDS：通道名、標稱、min、max、±%、單位。"
+                             "設計值，非正式規格。空的 min／max 維持待填。",
+                  wraplength=740, style="U.Muted.TLabel").pack(anchor="w", padx=8, pady=6)
+        frm = ttk.Frame(win)
+        frm.pack(fill="both", expand=True, padx=8)
+        heads = ("通道名", "標稱", "min", "max", "±%", "單位")
+        keys = SC.PP.FIELDS
+        for j, h in enumerate(heads):
+            tk.Label(frm, text=h, bg="#0E9BD8", fg="white", font=(self.fam, 9, "bold")).grid(row=0, column=j, sticky="we", padx=1)
+        vars_rows = []
+        rails = list(data.get("rails") or [])
+        # 預留空列讓使用者加 IBUS 等
+        while len(rails) < 14:
+            rails.append({"ch": "", "nom": None, "min": None, "max": None, "tol_pct": None, "unit": "V"})
+        for i, r in enumerate(rails):
+            rowv = {}
+            for j, k in enumerate(keys):
+                val = r.get(k)
+                sv = tk.StringVar(win, value="" if val is None else (val if k in ("ch", "unit") else f"{val:g}"))
+                ttk.Entry(frm, textvariable=sv, width=14 if k == "ch" else 10).grid(row=i + 1, column=j, padx=1, pady=1)
+                rowv[k] = sv
+            vars_rows.append(rowv)
+        bt = ttk.Frame(win)
+        bt.pack(fill="x", padx=8, pady=8)
+
+        def _collect():
+            out = []
+            for rowv in vars_rows:
+                ch = rowv["ch"].get().strip()
+                if not ch:
+                    continue
+                d = {"ch": ch}
+                for k in ("nom", "min", "max", "tol_pct"):
+                    s = rowv[k].get().strip()
+                    d[k] = None if not s else s
+                d["unit"] = rowv["unit"].get().strip() or "V"
+                out.append(SC.PP.clean_row(d))
+            return out
+
+        def _do_save(as_new):
+            try:
+                rows = _collect()
+            except ValueError as e:
+                messagebox.showerror("設計表", str(e), parent=win)
+                return
+            nm = name
+            if as_new or (hasattr(SC.PP, "is_builtin") and SC.PP.is_builtin(name)):
+                nm = simpledialog.askstring("另存電源設計表", "新名稱（存到使用者目錄，不覆寫隨附檔）：",
+                                            initialvalue=name + "_edit", parent=win)
+                if not nm:
+                    return
+            try:
+                path = SC.PP.save(nm, rows, note=data.get("note") or SC.NOTE)
+            except Exception as e:  # noqa: BLE001
+                messagebox.showerror("設計表", str(e), parent=win)
+                return
+            self.log(f"⑨ 已另存設計表「{nm}」→ {path}")
+            self.cb_spec_profile.configure(values=SC.PP.names())
+            self._apply_spec(profile=nm)
+            win.destroy()
+
+        ttk.Button(bt, text="另存新檔…", command=lambda: _do_save(True)).pack(side="left")
+        ttk.Button(bt, text="儲存（使用者目錄）", style="Primary.TButton",
+                   command=lambda: _do_save(save_as)).pack(side="left", padx=8)
+        ttk.Button(bt, text="取消", command=win.destroy).pack(side="right")
+
     # ------------------------------------------------------------------ 連線（背景自動 ＋ USB 自動重連）
     def _make_links(self):
+
         from .lecroy import LeCroyScope, SimBus, SimScope
         from .link import Link
         here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
@@ -1519,7 +1889,8 @@ class WaveSaverUI(tk.Tk):
         return dict(count=n, trig_timeout_s=to, base=base, prefix=self.v["prefix"].get().strip(), chans=chans,
                     fmt={k: self.v[f"fmt_{k}"].get() for k in ("png", "trc", "csv", "npz", "pm")}, pm=pm,
                     rails=self._rails_from_ui(), seq_on=self.v["seq_save"].get(), legend=self._legend(),
-                    trig=trig, trig_text=self._trig_text(), nvme=nvme, **o)
+                    trig=trig, trig_text=self._trig_text(), nvme=nvme,
+                    spec_compare=self._spec_csv, **o)
 
     def start_arb_capture(self, loops=None):
         """⚡ ARB＋擷取：兩台 arm → N6705 下載 / 啟動 ARB → 等觸發 → 讀 / 存（循環 N 次 × 掃描值）"""
@@ -1611,6 +1982,7 @@ class WaveSaverUI(tk.Tk):
             self._draw()
             self._seq_title = f"#{d['seq']} {d['time']}　"
             self._seq_show(d["seq_rows"], d["waves"], self._seq_title)
+            self._spec_refresh(waves=d["waves"], seq_rows=d["seq_rows"], pm_rows=d.get("pm_rows"))
             if self.cap and self.cap.cfg.get("arb"):
                 self._select_mon_tab("時序")
             if d.get("nvme") is not None:
@@ -1844,6 +2216,8 @@ def main(argv=None):
     ap.add_argument("--arb-ch", type=int, default=None, help="（測試）ARB 輸出通道 1/2/3/4（預設 3）")
     ap.add_argument("--unplug", default="", help="（示範測試）MODEL:秒數@幾秒後，例如 6104B:4@3")
     ap.add_argument("--folder", default="", help="存檔資料夾")
+    ap.add_argument("--form", default="", help="（測試／截圖）DUT 規格 U2 / M2")
+    ap.add_argument("--profile", default="", help="（測試／截圖）電源設計表名稱")
     a = ap.parse_args(argv)
     # 截圖時用暫時版面檔，避免寫進使用者的 ui_layout.json
     layout = a.layout or ("-" if a.shot else "")
@@ -1854,6 +2228,15 @@ def main(argv=None):
         app._pick_ch(int(a.arb_ch))
     if a.arb_tpl:
         app._pick_tpl(a.arb_tpl.strip().upper())
+    if a.form:
+        key = a.form.strip().upper().replace("U.2", "U2").replace("M.2", "M2").replace("U2/", "U2")
+        if key.startswith("U2"):
+            key = "U2"
+        elif key.startswith("M2"):
+            key = "M2"
+        app._want_form = key
+    if a.profile:
+        app._want_profile = a.profile.strip()
     if a.fold or a.unfold:
         app.after(200, lambda: app._apply_fold(a.fold, a.unfold))
     if a.view == "merge":
