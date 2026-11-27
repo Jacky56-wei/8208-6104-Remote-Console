@@ -1,12 +1,12 @@
 {
  "seq": 3,
- "time": "2026-11-27T22:13:08.233",
+ "time": "2026-11-27T22:31:19.099",
  "slave_triggered": true,
  "idn": {
   "6104B": "LECROY,HDO6104B,SIM0000,MAUI (模擬)",
   "8208HD": "LECROY,WR8208HD,SIM0000,MAUI (模擬)"
  },
- "trig": "觸發：主 C1 POS 0.42 V → Aux Out → 輔 EXT",
+ "trig": "觸發：主 C8 NEG 0.9 V → Aux Out → 輔 EXT",
  "gap_before": "",
  "channels": {
   "8208HD": [
@@ -62,7 +62,7 @@
    ]
   ]
  },
- "sequencing_verdict": "FAIL",
+ "sequencing_verdict": "",
  "arb": {
   "sweep_mode": "each",
   "channels": [

@@ -11,7 +11,7 @@ import numpy as np
 COLORS = ["#F2C744", "#E0457B", "#3FA9F5", "#3BB273", "#F28C28", "#9B59B6", "#1ABC9C", "#D0D0D0"]
 
 
-def make(path, model, names, units=None, size=(1920, 1080), trig="C1 ↑ 0.42 V", ext=False, tdiv="1.00 ms/div",
+def make(path, model, names, units=None, size=(1920, 1080), trig="C8 ↓ 0.90 V", ext=False, tdiv="1.00 ms/div",
          delay="-3.00 ms"):
     import matplotlib
     matplotlib.use("Agg")

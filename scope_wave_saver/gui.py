@@ -45,8 +45,8 @@ class WaveSaverUI(tk.Tk):
     def __init__(self, demo=True):
         super().__init__()
         self.title("雙示波器波形工具 v1.1（8208HD ＋ 6104B · MASTER / SLAVE）" + ("— 示範（模擬示波器）" if demo else ""))
-        self.geometry("1920x1080+0+0")
         self.demo = demo
+        self._place_window()
         self._style()
         self.v = {}
         self.q_ui = queue.Queue()                 # 背景執行緒 → UI（Tk 只在主執行緒更新）
@@ -80,6 +80,24 @@ class WaveSaverUI(tk.Tk):
         st.configure("Muted.TLabel", foreground="#57606a")
         st.configure("Trig.TLabel", font=(FAM, 11, "bold"), foreground="#0E9BD8")
 
+    def _place_window(self):
+        """1920×1080 螢幕：預設約 1920×1040（留工作列）；Windows 再開最大化。"""
+        self.update_idletasks()
+        try:
+            sw = int(self.winfo_screenwidth() or 1920)
+            sh = int(self.winfo_screenheight() or 1080)
+        except tk.TclError:
+            sw, sh = 1920, 1080
+        w = 1920 if sw >= 1900 else max(min(sw, 1920), 1280)
+        h = 1040 if sh >= 1080 else max(sh - 40, 720)
+        self.geometry(f"{w}x{h}+0+0")
+        self.minsize(1280, 720)
+        try:
+            if sys.platform == "win32":
+                self.state("zoomed")
+        except tk.TclError:
+            pass
+
     def _sv(self, k, d):
         self.v[k] = tk.StringVar(self, value=str(d))
         return self.v[k]
@@ -91,7 +109,7 @@ class WaveSaverUI(tk.Tk):
     # ------------------------------------------------------------------ 版面
     def _build(self):
         try:
-            from u2core.ui import InstRow, Tip, UnifiedBody, action_row
+            from u2core.ui import Tip, UnifiedBody, action_row
         except Exception as e:  # noqa: BLE001
             raise SystemExit(f"需要 All in Test tool 的 u2core（設 U2_TOOL_DIR）：{e}")
         self.Tip = Tip
@@ -139,7 +157,7 @@ class WaveSaverUI(tk.Tk):
                                                        "MASTER 8208HD ＋ SLAVE 6104B · Aux Out → EXT 觸發同步 · 波形存中控電腦"))
         except Exception:  # noqa: BLE001
             pass
-        self._conn(body, InstRow)
+        self._conn(body)
         page = body.page
         page.columnconfigure(0, weight=1)
         self._trigger(body.card("觸發設定（MASTER 觸發通道 / 準位 / 斜率）", 0, 0, num=2))
@@ -152,50 +170,66 @@ class WaveSaverUI(tk.Tk):
         self._monitor(body.right_nb)
 
     # ---- ① 儀器連線（自動連線；對時 / Auto scale 背景做，只寫紀錄，失敗才顯示）
-    def _conn(self, body, InstRow):
-        self.rows, self.st_var, self.idn_var = {}, {}, {}
-        for role, m in (("MASTER 主", MASTER_DEF), ("SLAVE 輔", SLAVE_DEF)):
-            st = self.st_var[m] = tk.StringVar(self, value=f"連線中… · {role}")
-            r = InstRow(body.conn, "wavesaver", KEY[m], f"{TITLE_M[m]}", addr_var=self._sv(f"addr_{m}", ADDR[m]),
-                        connect=lambda: None, connected=lambda m=m: bool(self.links.get(m) and self.links[m].up),
-                        status_var=st, app_btn_text=True, btn_text="中斷")
-            self.rows[m] = r
-            try:                                           # 斷線 = 紅燈（InstRow 的灰燈改紅）
-                _orig = r.dot.set
-                r.dot.set = lambda c, m=m, _o=_orig: _o(RED if (self.links.get(m) and self.links[m].state == "down") else c)
-            except Exception:  # noqa: BLE001
-                pass
-            info = ttk.Frame(body.conn)
-            info.pack(fill="x", padx=(22, 0))
-            self.idn_var[m] = tk.StringVar(self, value="")
-            ttk.Label(info, textvariable=self.idn_var[m], style="U.Muted.TLabel").pack(side="left")
-            # 對時 / Auto scale / 重連 在背景做、只寫紀錄；失敗 / 斷線才在這裡顯示（平常隱藏）
-            self.bg_warn = getattr(self, "bg_warn", {})
-            self.bg_warn[m] = tk.Label(info, text="", fg=FAIL_C[0], bg=FAIL_C[1], font=(self.fam, 9), padx=5)
-            if self.demo:
-                ttk.Button(info, text="模擬拔 USB 5 s（示範）", style="U.Small.TButton",
-                           command=lambda m=m: self.sim_unplug(m, 5.0)).pack(side="right")
-        # N6705（ARB 電源）：同樣背景自動連線 ＋ USB 自動重連；連線後只做對時 / *CLS，不動輸出
+    def _conn(self, body):
+        """① 單列狀態條：色點＋型號；位址收進 ⚙ 進階。背景自動連線不變。"""
+        from u2core.ui import Dot
         from .n6705 import DEF_ADDR
-        m = "N6705"
-        st = self.st_var[m] = tk.StringVar(self, value="連線中… · ARB 電源")
-        r = InstRow(body.conn, "wavesaver", "n6705", "Keysight N6705（ARB 電源）", addr_var=self._sv("addr_N6705", DEF_ADDR),
-                    connect=lambda: None, connected=lambda: bool(self.psu and self.psu.up), status_var=st,
-                    app_btn_text=True, btn_text="中斷")
-        self.rows[m] = r
-        try:
-            _orig = r.dot.set
-            r.dot.set = lambda c, _o=_orig: _o(RED if (self.psu and self.psu.state == "down") else c)
-        except Exception:  # noqa: BLE001
-            pass
-        info = ttk.Frame(body.conn)
-        info.pack(fill="x", padx=(22, 0))
-        self.idn_var[m] = tk.StringVar(self, value="")
-        ttk.Label(info, textvariable=self.idn_var[m], style="U.Muted.TLabel").pack(side="left")
-        self.bg_warn[m] = tk.Label(info, text="", fg=FAIL_C[0], bg=FAIL_C[1], font=(self.fam, 9), padx=5)
-        if self.demo:
-            ttk.Button(info, text="模擬拔 USB 5 s（示範）", style="U.Small.TButton",
-                       command=lambda: self.sim_unplug("N6705", 5.0)).pack(side="right")
+        self.rows, self.st_var, self.idn_var, self.bg_warn = {}, {}, {}, {}
+        for m in (MASTER_DEF, SLAVE_DEF):
+            self._sv(f"addr_{m}", ADDR[m])
+        self._sv("addr_N6705", DEF_ADDR)
+        strip = ttk.Frame(body.conn)
+        strip.pack(fill="x", pady=(0, 2))
+        items = ((MASTER_DEF, "8208HD", "主"), (SLAVE_DEF, "6104B", "輔"), ("N6705", "N6705", "ARB"))
+        for m, short, role in items:
+            chip = ttk.Frame(strip)
+            chip.pack(side="left", padx=(0, 14))
+            st = self.st_var[m] = tk.StringVar(self, value="連線中…")
+            self.idn_var[m] = tk.StringVar(self, value="")
+            dot = Dot(chip, size=12)
+            dot.pack(side="left", padx=(0, 4))
+            ttk.Label(chip, text=short, font=(self.fam, 10, "bold")).pack(side="left")
+            ttk.Label(chip, text=f"（{role}）", style="U.Muted.TLabel").pack(side="left")
+            ttk.Label(chip, textvariable=st, style="U.Muted.TLabel").pack(side="left", padx=(4, 0))
+            self.rows[m] = type("Chip", (), {"dot": dot, "model": m})()
+            self.Tip(chip, lambda m=m: (self.idn_var[m].get() or self.st_var[m].get() or short))
+        ttk.Button(strip, text="⚙ 位址 / 進階", style="U.Small.TButton",
+                   command=self._conn_dialog).pack(side="right")
+        warn = ttk.Frame(body.conn)
+        warn.pack(fill="x")
+        self.conn_warn = warn
+        for m, _s, _r in items:
+            self.bg_warn[m] = tk.Label(warn, text="", fg=FAIL_C[0], bg=FAIL_C[1], font=(self.fam, 9), padx=5)
+
+    def _conn_dialog(self):
+        if getattr(self, "_conn_win", None) is not None:
+            try:
+                if self._conn_win.winfo_exists():
+                    self._conn_win.deiconify()
+                    self._conn_win.lift()
+                    return
+            except tk.TclError:
+                pass
+        w = tk.Toplevel(self)
+        w.title("儀器位址 / 進階")
+        w.transient(self)
+        self._conn_win = w
+        ttk.Label(w, text="背景自動連線與 USB 重連會一直跑；這裡只改 VISA 位址，或示範模擬拔線。",
+                  style="U.Muted.TLabel", wraplength=680, justify="left").pack(anchor="w", padx=12, pady=(10, 6))
+        for m, title in ((MASTER_DEF, TITLE_M[MASTER_DEF]), (SLAVE_DEF, TITLE_M[SLAVE_DEF]),
+                         ("N6705", "Keysight N6705（ARB 電源）")):
+            lf = ttk.LabelFrame(w, text=f" {title} ", padding=8)
+            lf.pack(fill="x", padx=12, pady=4)
+            r = ttk.Frame(lf)
+            r.pack(fill="x")
+            ttk.Label(r, text="VISA").pack(side="left")
+            ttk.Entry(r, textvariable=self.v[f"addr_{m}"], width=56,
+                      font=("DejaVu Sans Mono", 9)).pack(side="left", padx=6, fill="x", expand=True)
+            ttk.Label(lf, textvariable=self.idn_var[m], style="U.Muted.TLabel").pack(anchor="w", pady=(4, 0))
+            if self.demo:
+                ttk.Button(lf, text="模擬拔 USB 5 s（示範）", style="U.Small.TButton",
+                           command=lambda m=m: self.sim_unplug(m, 5.0)).pack(anchor="w", pady=(4, 0))
+        ttk.Button(w, text="關閉", command=w.destroy).pack(pady=10)
 
     def bg_result(self, model, task, ok, msg=""):
         """背景工作（對時 / Auto scale）結果：成功 → 只寫紀錄；失敗 → 紀錄 ＋ ① 該台下方紅字"""
@@ -242,18 +276,25 @@ class WaveSaverUI(tk.Tk):
         g.pack(fill="x")
         ttk.Label(g, text="觸發通道", style="Trig.TLabel").grid(row=0, column=0, sticky="w")
         srcs = [f"C{i + 1}  {n}" for i, n in enumerate(NAMES[MASTER_DEF])]
-        ttk.Combobox(g, textvariable=self._sv("trig_src", srcs[0]), values=srcs, state="readonly", width=14,
-                     font=(self.fam, 11)).grid(row=0, column=1, sticky="w", padx=(6, 18))
+        rstn = next((s for s in srcs if s.endswith("RSTn")), srcs[-1])
+        lv0 = f"{VNOM['RSTn'] * 0.5:g}"
+        cb_src = ttk.Combobox(g, textvariable=self._sv("trig_src", rstn), values=srcs, state="readonly", width=14,
+                              font=(self.fam, 11))
+        cb_src.grid(row=0, column=1, sticky="w", padx=(6, 18))
         ttk.Label(g, text="準位", style="Trig.TLabel").grid(row=0, column=2, sticky="w")
-        ttk.Spinbox(g, textvariable=self._sv("trig_level", "0.42"), from_=-50, to=50, increment=0.01, width=8,
+        ttk.Spinbox(g, textvariable=self._sv("trig_level", lv0), from_=-50, to=50, increment=0.01, width=8,
                     font=(self.fam, 11)).grid(row=0, column=3, sticky="w", padx=(6, 2))
-        ttk.Label(g, text="V（50 % × 標稱 0.84 V）", style="U.Muted.TLabel").grid(row=0, column=4, sticky="w", padx=(0, 18))
+        self.v_trig_hint = tk.StringVar(self, value=f"V（50 % × RSTn {VNOM['RSTn']:g} V）")
+        ttk.Label(g, textvariable=self.v_trig_hint, style="U.Muted.TLabel").grid(row=0, column=4, sticky="w", padx=(0, 18))
         ttk.Label(g, text="斜率", style="Trig.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
         sf = ttk.Frame(g)
         sf.grid(row=1, column=1, columnspan=4, sticky="w", pady=(6, 0), padx=(6, 0))
-        sv = self._sv("trig_slope", "POS")
+        sv = self._sv("trig_slope", "POS")          # 預設 CH3 Ramp → Rising；切 Brownout / ON-OFF-ON 會改 Falling（可改）
+        self._trig_slope_user = False
         for txt, val in (("↑ Rising 上升", "POS"), ("↓ Falling 下降", "NEG"), ("↕ Either 雙向", "EITHER")):
-            ttk.Radiobutton(sf, text=txt, value=val, variable=sv).pack(side="left", padx=(0, 14))
+            ttk.Radiobutton(sf, text=txt, value=val, variable=sv,
+                            command=lambda: setattr(self, "_trig_slope_user", True)).pack(side="left", padx=(0, 14))
+        cb_src.bind("<<ComboboxSelected>>", self._on_trig_src)
         ttk.Label(g, text="模式").grid(row=2, column=0, sticky="w", pady=(6, 0))
         hf = ttk.Frame(g)
         hf.grid(row=2, column=1, columnspan=4, sticky="w", pady=(6, 0), padx=(6, 0))
@@ -270,10 +311,43 @@ class WaveSaverUI(tk.Tk):
         ttk.Button(bf, text="⤒ 套用觸發到兩台", style="Primary.TButton", command=self.write_settings).pack(side="left")
         ttk.Button(bf, text="▶ SINGLE（輔先 arm，主再 arm）", command=lambda: self.start_capture(count=1)).pack(side="left", padx=6)
         ttk.Button(bf, text="⤓ 讀回示波器目前觸發", style="U.Small.TButton").pack(side="left")
-        ttk.Label(bf, text="讀回 ✓ C1 0.42 V POS", foreground=PASS_C[0]).pack(side="left", padx=8)
+        ttk.Label(bf, text="預設主 C8 RSTn；斜率跟 ⑧ 範本走（可改）　輔仍走 Aux Out → EXT",
+                  style="U.Muted.TLabel").pack(side="left", padx=8)
         # 主 / 輔同步固定在背景做（主 8208HD AUX OUT ──BNC── 輔 6104B EXT；EX10、0.5 V、↑；輔時基跟主），UI 不顯示
         self._bv("sync_on", True)
         self._bv("align", True)
+
+    def _on_trig_src(self, _e=None):
+        """換觸發通道 → 準位改成該通道標稱的 50 %（RSTn 1.8 V → 0.9 V）"""
+        src = self.v["trig_src"].get()
+        parts = src.split()
+        nm = parts[-1] if len(parts) >= 2 else ""
+        vnom = VNOM.get(nm)
+        if vnom:
+            self.v["trig_level"].set(f"{vnom * 0.5:g}")
+            self.v_trig_hint.set(f"V（50 % × {nm} {vnom:g} V）")
+        else:
+            self.v_trig_hint.set("V")
+        self._note()
+
+    def _slope_for_tpl(self, tpl):
+        return "POS" if tpl == "RAMP" else "NEG" if tpl in ("BROWNOUT", "ONOFFON") else None
+
+    def _sync_trig_from_tpl(self, force=False):
+        """斜率跟目前啟用的 ARB 範本走：Ramp → Rising，Brownout / ON-OFF-ON → Falling。使用者改過斜率則不覆蓋。"""
+        if not force and getattr(self, "_trig_slope_user", False):
+            return
+        tpl = ""
+        for ch in (3, 1, 2, 4):          # VIN 預設 CH3 優先
+            k = f"arb{ch}_tpl"
+            if k in self.v and self.v.get(f"arb{ch}_en") and self.v[f"arb{ch}_en"].get() and self.v[k].get() != "NONE":
+                tpl = self.v[k].get()
+                break
+        sl = self._slope_for_tpl(tpl)
+        if sl:
+            self.v["trig_slope"].set(sl)
+            self._trig_slope_user = False
+        self._note()
 
     # ---- ③ 通道＋bus name
     def _channels(self, f):
@@ -460,7 +534,10 @@ class WaveSaverUI(tk.Tk):
     def _note(self):
         self.v_save_note.set("上下實圖（輔 上 / 主 下，裁到格線區、無縫接合）→ 畫面_上下.png；另存兩台原始實圖")
         if hasattr(self, "lb_head"):
-            self.lb_head.configure(text="  上：輔 SLAVE  HDO6104B（EXT 觸發 ✓）　／　下：主 MASTER  WaveRunner 8208HD（C1 CORE ↑ 0.42 V ✓）")
+            sl = {"POS": "↑", "NEG": "↓", "EITHER": "↕"}.get(self.v.get("trig_slope") and self.v["trig_slope"].get(), "↓")
+            src = self.v["trig_src"].get() if self.v.get("trig_src") else "C8  RSTn"
+            lv = self.v["trig_level"].get() if self.v.get("trig_level") else "0.9"
+            self.lb_head.configure(text=f"  上：輔 SLAVE  HDO6104B（EXT 觸發 ✓）　／　下：主 MASTER  WaveRunner 8208HD（{src} {sl} {lv} V ✓）")
 
     def _layout_shots(self):
         self.stack_lab.grid(row=0, column=0, sticky="nsew")
@@ -839,43 +916,48 @@ class WaveSaverUI(tk.Tk):
                     self._fit_shots()
                 elif k == "readback":
                     self._apply_readback(it[1], it[2])
+                elif k == "nvme":
+                    rows, note = it[1], it[2]
+                    if isinstance(rows, dict) and rows.get("error"):
+                        self.log(f"⚠ Linux NVMe rescan 失敗：{rows['error']}")
+                    else:
+                        self.log(f"Linux NVMe rescan：{note}")
+                    self._nvme_fill(rows)
         except queue.Empty:
             pass
         self.after(100, self._pump)
 
     # ---- ⑧ N6705 ARB（參數式範本，不用編點）
     ARB_CH_DEF = {1: ("", False), 2: ("", False), 3: ("VIN 12V", True), 4: ("", False)}   # Autotest_tool：DUT 12 V 預設 CH3
+    ARB_MAIN_CH, ARB_ADV_CH = (1, 3), (2, 4)
+    ARB_TPL_BTNS = (
+        ("RAMP", "Ramp", "上升 / 下降", "▲", "#1a7f37"),
+        ("BROWNOUT", "Brownout margin", "掉電壓", "▼", "#bc4c00"),
+        ("ONOFFON", "Instant ON-OFF-ON", "瞬間開關", "⚡", "#0550ae"),
+    )
 
     def _arb_card(self, f):
         from . import arbtpl as T
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        from matplotlib.figure import Figure
         self._T = T
-        nb = ttk.Notebook(f)
-        nb.pack(fill="x")
-        self.arb_par = {}
-        for ch in (1, 2, 3, 4):
-            lb, en = self.ARB_CH_DEF[ch]
-            pg = ttk.Frame(nb, padding=(6, 6, 6, 4))
-            nb.add(pg, text=f" CH{ch} ")
-            top = ttk.Frame(pg)
-            top.pack(fill="x")
-            ttk.Checkbutton(top, text="使用", variable=self._bv(f"arb{ch}_en", en),
-                            command=self._arb_changed).pack(side="left")
-            ttk.Label(top, text="　標籤").pack(side="left")
-            ttk.Entry(top, textvariable=self._sv(f"arb{ch}_lb", lb or f"CH{ch}"), width=10).pack(side="left", padx=(4, 10))
-            tv = self._sv(f"arb{ch}_tpl", "RAMP" if en else "NONE")
-            for key, name in T.TEMPLATES:
-                ttk.Radiobutton(top, text=name, value=key, variable=tv, style="Toolbutton",
-                                command=lambda ch=ch: (self._arb_fields(ch), self._arb_changed())).pack(side="left", padx=1)
-            par = ttk.Frame(pg)
-            par.pack(fill="x", pady=(6, 0))
-            self.arb_par[ch] = par
-            for key, *_r in T.TEMPLATES:                    # 每個範本各自一組參數（切換範本不會弄丟）
-                for k, _lbl, d, _u, _sw in T.FIELDS.get(key, []):
-                    v = self._sv(f"arb{ch}_{key}_{k}", d)
-                    v.trace_add("write", lambda *_: self._arb_changed())
-            self._arb_fields(ch)
-        nb.select(2)
-        self.arb_nb = nb
+        self.arb_par, self.arb_tpl_btns = {}, {}
+        for ch in self.ARB_MAIN_CH:
+            self._arb_chan(f, ch, prominent=True)
+        self.arb_adv = ttk.Frame(f)
+        for ch in self.ARB_ADV_CH:
+            self._arb_chan(self.arb_adv, ch, prominent=False)
+        adv_btn = ttk.Button(f, text="▸ 進階：CH2 / CH4（通常不用）", style="U.Small.TButton")
+
+        def _tog_adv():
+            if self.arb_adv.winfo_ismapped():
+                self.arb_adv.pack_forget()
+                adv_btn.configure(text="▸ 進階：CH2 / CH4（通常不用）")
+            else:
+                self.arb_adv.pack(fill="x", after=adv_btn, pady=(4, 0))
+                adv_btn.configure(text="▾ 收合 CH2 / CH4")
+        adv_btn.configure(command=_tog_adv)
+        adv_btn.pack(anchor="w", pady=(4, 0))
         r = ttk.Frame(f)
         r.pack(fill="x", pady=(6, 0))
         ttk.Label(r, text="掃描").pack(side="left")
@@ -900,18 +982,191 @@ class WaveSaverUI(tk.Tk):
         ttk.Label(r2, textvariable=self.v_arb_sum, font=(self.fam, 10, "bold"), foreground="#0958d9").pack(side="left", padx=6)
         self.v_arb_msg = tk.StringVar(self, value="")
         ttk.Label(f, textvariable=self.v_arb_msg, foreground="#cf222e", wraplength=780, justify="left").pack(anchor="w")
-        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-        from matplotlib.figure import Figure
-        self.fig_arb = Figure(figsize=(8.2, 2.3), dpi=96, facecolor="#FFFFFF")
+        self.fig_arb = Figure(figsize=(8.2, 1.7), dpi=96, facecolor="#FFFFFF")
         self.cv_arb = FigureCanvasTkAgg(self.fig_arb, f)
         self.cv_arb.get_tk_widget().pack(fill="x", pady=(4, 0))
-        ttk.Label(f, text="流程：輔 arm → 主 arm → 下載 ARB（ABOR:TRAN → 形狀 / 參數 → ARB:COUN → TRIG:ARB:SOUR BUS → SYST:ERR?）→ "
-                          "OUTP ON → INIT:TRAN → *TRG（所有通道同時）→ 等主觸發 → 讀 / 存。ARB 跑完主沒觸發（例 Brownout 沒掉到 reset）"
-                          "→ summary 記「未觸發」、換下一個值。數值可帶單位（2ms、100u）；掃描用 / 分隔（-5%/-10%、1ms/2ms/5ms）。"
-                          "範本 + 參數 + 這次的掃描值存進 info.json / summary.csv。",
+        ttk.Label(f, text="流程：輔 arm → 主 arm（預設 C8 RSTn）→ 下載 ARB → OUTP ON → *TRG → 等主觸發 → 讀 / 存；"
+                          "同時用 ⑦ 的上 / 下電時序算每條 rail 的 10↔90 % 時間、slew rate、對參考的 Δt，寫入時序 CSV ＋ summary。"
+                          "ARB 跑完主沒觸發（RSTn 沒跳，例淺 Brownout）→ summary 記「未觸發」。"
+                          "掃描用 / 分隔（-10%/-20%/-50%、1ms/2ms/5ms）。",
                   style="U.Muted.TLabel", wraplength=780, justify="left").pack(anchor="w", pady=(4, 0))
+        self._nvme_block(f)
         self._arb_job = None
         self.after(400, self._arb_preview)
+        self.after(450, lambda: (self._style_tpl_btns(), self._sync_trig_from_tpl()))
+
+    def _arb_chan(self, parent, ch, prominent=True):
+        T = self._T
+        lb, en = self.ARB_CH_DEF[ch]
+        box = ttk.LabelFrame(parent, text=f" N6705 CH{ch} ", padding=(8, 6, 8, 6))
+        box.pack(fill="x", pady=(4, 0))
+        top = ttk.Frame(box)
+        top.pack(fill="x")
+        ttk.Checkbutton(top, text="使用", variable=self._bv(f"arb{ch}_en", en),
+                        command=lambda ch=ch: (self._style_tpl_btns(ch), self._arb_changed(), self._sync_trig_from_tpl())
+                        ).pack(side="left")
+        ttk.Label(top, text="　標籤").pack(side="left")
+        ttk.Entry(top, textvariable=self._sv(f"arb{ch}_lb", lb or f"CH{ch}"), width=12).pack(side="left", padx=(4, 10))
+        self._sv(f"arb{ch}_tpl", "RAMP" if en else "NONE")
+        bf = ttk.Frame(box)
+        bf.pack(fill="x", pady=(6, 2))
+        self.arb_tpl_btns[ch] = {}
+        for key, title, sub, icon, col in self.ARB_TPL_BTNS:
+            b = tk.Button(bf, text=f"{icon}  {title}\n{sub}", justify="center",
+                          font=(self.fam, 11, "bold"), width=18, height=2, cursor="hand2",
+                          wraplength=160, bd=3, relief="raised",
+                          command=lambda ch=ch, key=key: self._pick_tpl(ch, key))
+            b.pack(side="left", padx=4, pady=2, fill="x", expand=True)
+            b._sel_color = col
+            self.arb_tpl_btns[ch][key] = b
+        par = ttk.Frame(box)
+        par.pack(fill="x", pady=(4, 0))
+        self.arb_par[ch] = par
+        for key, *_r in T.TEMPLATES:
+            for k, _lbl, d, _u, _sw in T.FIELDS.get(key, []):
+                v = self._sv(f"arb{ch}_{key}_{k}", d)
+                v.trace_add("write", lambda *_: self._arb_changed())
+        self._arb_fields(ch)
+        self._style_tpl_btns(ch)
+
+    def _pick_tpl(self, ch, key):
+        self.v[f"arb{ch}_en"].set(True)
+        self.v[f"arb{ch}_tpl"].set(key)
+        self._trig_slope_user = False
+        self._sync_trig_from_tpl(force=True)
+        self._arb_fields(ch)
+        self._style_tpl_btns(ch)
+        self._arb_changed()
+
+    def _style_tpl_btns(self, ch=None):
+        chs = [ch] if ch else list(self.arb_tpl_btns)
+        for c in chs:
+            tpl = self.v[f"arb{c}_tpl"].get() if f"arb{c}_tpl" in self.v else "NONE"
+            on = bool(self.v.get(f"arb{c}_en") and self.v[f"arb{c}_en"].get() and tpl != "NONE")
+            for key, b in self.arb_tpl_btns.get(c, {}).items():
+                sel = on and key == tpl
+                col = getattr(b, "_sel_color", "#0E9BD8")
+                b.configure(bg=col if sel else "#f6f8fa",
+                            fg="#ffffff" if sel else "#1f2328",
+                            relief="sunken" if sel else "raised",
+                            bd=4 if sel else 2,
+                            font=(self.fam, 11, "bold") if sel else (self.fam, 11),
+                            highlightbackground=col if sel else "#d0d7de",
+                            highlightthickness=2 if sel else 1,
+                            activebackground=col if sel else "#eaeef2",
+                            activeforeground="#ffffff" if sel else "#1f2328")
+
+    def _nvme_block(self, f):
+        """Linux NVMe rescan：預設關閉；沒勾就不佔空間、不連線、不 import paramiko。"""
+        row = ttk.Frame(f)
+        row.pack(fill="x", pady=(8, 0))
+        ttk.Checkbutton(row, text="啟用 Linux NVMe rescan（選用，預設關閉）",
+                        variable=self._bv("nvme_on", False), command=self._nvme_toggle).pack(side="left")
+        self.nvme_box = ttk.LabelFrame(f, text=" Linux NVMe rescan ＋ 認碟 ", padding=6)
+        r = ttk.Frame(self.nvme_box)
+        r.pack(fill="x")
+        ttk.Label(r, text="主機").pack(side="left")
+        ttk.Entry(r, textvariable=self._sv("nvme_host", ""), width=16).pack(side="left", padx=4)
+        ttk.Label(r, text="埠").pack(side="left")
+        ttk.Entry(r, textvariable=self._sv("nvme_port", "22"), width=5).pack(side="left", padx=4)
+        ttk.Label(r, text="帳號").pack(side="left")
+        ttk.Entry(r, textvariable=self._sv("nvme_user", "root"), width=10).pack(side="left", padx=4)
+        ttk.Label(r, text="密碼").pack(side="left")
+        ttk.Entry(r, textvariable=self._sv("nvme_pw", ""), width=12, show="*").pack(side="left", padx=4)
+        ttk.Label(r, text="等").pack(side="left")
+        ttk.Entry(r, textvariable=self._sv("nvme_wait", "2"), width=4).pack(side="left", padx=2)
+        ttk.Label(r, text="s  後列舉").pack(side="left")
+        ttk.Button(r, text="↻ 立刻 rescan", style="U.Small.TButton", command=self._nvme_now).pack(side="left", padx=8)
+        from . import nvmehost as NH
+        cols = NH.COLS
+        tv = ttk.Treeview(self.nvme_box, columns=cols, show="headings", height=3)
+        for c in cols:
+            tv.heading(c, text=NH.COL_ZH[c])
+            tv.column(c, width=110 if c != "capacity" else 180, anchor="w", stretch=True)
+        tv.pack(fill="x", pady=(6, 0))
+        self.tv_nvme = tv
+        self.nvme_tab = None
+        # 預設關閉：不 pack nvme_box
+
+    def _nvme_toggle(self):
+        on = bool(self.v["nvme_on"].get())
+        if on:
+            self.nvme_box.pack(fill="x", pady=(4, 0))
+            self._nvme_ensure_tab()
+        else:
+            self.nvme_box.pack_forget()
+            self._nvme_drop_tab()
+
+    def _nvme_ensure_tab(self):
+        if self.nvme_tab is not None:
+            return
+        from . import nvmehost as NH
+        pf = ttk.Frame(self.mon_nb, padding=4)
+        self.mon_nb.add(pf, text="  NVMe 認碟  ")
+        ttk.Label(pf, text="ARB 擷取後（或按 ↻ 立刻 rescan）列出每顆 NVMe。示範模式為模擬資料。",
+                  style="U.Muted.TLabel").pack(anchor="w")
+        cols = NH.COLS
+        tv = ttk.Treeview(pf, columns=cols, show="headings", height=8)
+        for c in cols:
+            tv.heading(c, text=NH.COL_ZH[c])
+            tv.column(c, width=120 if c != "capacity" else 200, anchor="w", stretch=True)
+        tv.pack(fill="both", expand=True, pady=(4, 0))
+        self.tv_nvme_tab = tv
+        self.nvme_tab = pf
+
+    def _nvme_drop_tab(self):
+        t = self.nvme_tab
+        if t is None:
+            return
+        try:
+            self.mon_nb.forget(t)
+        except tk.TclError:
+            pass
+        self.nvme_tab = None
+
+    def _nvme_fill(self, drives):
+        rows = drives if isinstance(drives, list) else []
+        from . import nvmehost as NH
+        for tv in (getattr(self, "tv_nvme", None), getattr(self, "tv_nvme_tab", None)):
+            if tv is None:
+                continue
+            tv.delete(*tv.get_children())
+            for d in rows:
+                tv.insert("", "end", values=tuple(d.get(k, "") or "—" for k in NH.COLS))
+        if isinstance(drives, dict) and drives.get("error"):
+            self.log(f"⚠ NVMe：{drives['error']}")
+
+    def _nvme_now(self):
+        if not self.v["nvme_on"].get():
+            return
+
+        def job():
+            from . import nvmehost as NH
+            try:
+                h = NH.connect(self.v["nvme_host"].get(), port=self.v["nvme_port"].get() or 22,
+                               user=self.v["nvme_user"].get(), password=self.v["nvme_pw"].get(),
+                               sim=self.demo)
+                rows, note = NH.rescan_and_list(h, wait_s=float(self.v["nvme_wait"].get() or 2))
+                try:
+                    h.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                self.q_ui.put(("nvme", rows, note))
+            except Exception as e:  # noqa: BLE001
+                self.q_ui.put(("nvme", {"error": str(e)}, str(e)))
+        threading.Thread(target=job, daemon=True).start()
+
+    def _select_mon_tab(self, hint):
+        nb = getattr(self, "mon_nb", None)
+        if nb is None:
+            return
+        try:
+            for i in range(nb.index("end")):
+                if hint in str(nb.tab(i, "text")):
+                    nb.select(i)
+                    return
+        except tk.TclError:
+            pass
 
     def _arb_fields(self, ch):
         T = self._T
@@ -1021,7 +1276,7 @@ class WaveSaverUI(tk.Tk):
             except ValueError:
                 n = 1
             tot = "直到 ■ 停止" if n <= 0 else f"{n * (a['nsweep'] if a['sweep_mode'] == 'each' else 1)} 次擷取"
-            self.v_arb_sum.set(f"→ {tot}")
+            self.v_arb_sum.set(f"→ {tot}　{self._trig_text()}")
         self.v_arb_msg.set("　".join(sums) + (("\n✗ " + "；".join(msgs)) if msgs else ""))
 
     def psu_abort(self):
@@ -1079,13 +1334,32 @@ class WaveSaverUI(tk.Tk):
         chans = {m: [(i + 1, self.v[f"nm_{m}_{i}"].get().strip() or NAMES[m][i]) for i in range(NCH[m])
                      if self.v[f"en_{m}_{i}"].get()] for m in NCH}
         o = self._seq_opts()
+        try:
+            tlv = float(self.v["trig_level"].get())
+        except ValueError:
+            tlv = VNOM["RSTn"] * 0.5
+        trig = {"src": self.v["trig_src"].get().split()[0], "level": tlv, "slope": self.v["trig_slope"].get()}
+        nvme = {}
+        if self.v.get("nvme_on") and self.v["nvme_on"].get():
+            try:
+                wait = float(self.v["nvme_wait"].get() or 2)
+            except ValueError:
+                wait = 2.0
+            try:
+                port = int(float(self.v["nvme_port"].get() or 22))
+            except ValueError:
+                port = 22
+            nvme = {"on": True, "sim": bool(self.demo), "host": self.v["nvme_host"].get().strip(),
+                    "port": port, "user": self.v["nvme_user"].get().strip() or "root",
+                    "password": self.v["nvme_pw"].get(), "wait_s": wait}
         return dict(count=n, trig_timeout_s=to, base=base, prefix=self.v["prefix"].get().strip(), chans=chans,
                     fmt={k: self.v[f"fmt_{k}"].get() for k in ("png", "trc", "csv", "npz", "pm")}, pm=pm,
                     rails=self._rails_from_ui(), seq_on=self.v["seq_save"].get(), legend=self._legend(),
-                    trig_text=self._trig_text(), **o)
+                    trig=trig, trig_text=self._trig_text(), nvme=nvme, **o)
 
     def start_arb_capture(self, loops=None):
         """⚡ ARB＋擷取：兩台 arm → N6705 下載 / 啟動 ARB → 等觸發 → 讀 / 存（循環 N 次 × 掃描值）"""
+        self._sync_trig_from_tpl()
         try:
             arb = self._arb_cfg()
         except ValueError as e:
@@ -1154,6 +1428,8 @@ class WaveSaverUI(tk.Tk):
             self.v_prog.set(self._prog_text(d["seq"], N, "未觸發"))
             self.saved_txt.insert("end", f"#{d['seq']}  未觸發（{d.get('arb', '')}）：{d.get('msg', '')}\n")
             self.saved_txt.see("end")
+            if d.get("nvme") is not None:
+                self._nvme_fill(d["nvme"])
         elif kind == "captured":
             self._cap_last = d["time"]
             if N > 0:
@@ -1171,6 +1447,13 @@ class WaveSaverUI(tk.Tk):
             self._draw()
             self._seq_title = f"#{d['seq']} {d['time']}　"
             self._seq_show(d["seq_rows"], d["waves"], self._seq_title)
+            if self.cap and self.cap.cfg.get("arb"):
+                self._select_mon_tab("時序")
+            if d.get("nvme") is not None:
+                self._nvme_fill(d["nvme"])
+                if self.v.get("nvme_on") and self.v["nvme_on"].get():
+                    self._select_mon_tab("NVMe")  # 認碟表；時序已寫入分頁，使用者可再切回去
+                    self._select_mon_tab("時序")
             tv = self.tv_pm
             tv.delete(*tv.get_children())
             for r in d["pm_rows"]:
@@ -1364,7 +1647,9 @@ class WaveSaverUI(tk.Tk):
                     ax.text(0.01, 0.82, f"C{i} {NAMES[m][i - 1]}" + (" (A)" if NAMES[m][i - 1] in UNIT_A else " (V)"), transform=ax.transAxes, fontsize=8, color=col,
                             weight="bold", family=fam)
                     if k == 0:
-                        ax.set_title(f"{role}　{TITLE_M[m]}" + ("　EXT 觸發 ✓" if m == SLAVE_DEF else "　C1 ↑ 0.42 V ✓"),
+                        sl = {"POS": "↑", "NEG": "↓", "EITHER": "↕"}.get(self.v["trig_slope"].get(), "")
+                        tsrc = self.v["trig_src"].get() + f" {sl} {self.v['trig_level'].get()} V ✓"
+                        ax.set_title(f"{role}　{TITLE_M[m]}" + ("　EXT 觸發 ✓" if m == SLAVE_DEF else f"　{tsrc}"),
                                      fontsize=10, family=fam, color="#0E9BD8")
                     if k == n - 1:
                         ax.set_xlabel("時間 (ms)", family=fam, fontsize=8)
@@ -1391,9 +1676,7 @@ def main(argv=None):
     if a.folder:
         app.v["folder"].set(a.folder)
     if a.arb_tpl:
-        app.v["arb3_tpl"].set(a.arb_tpl)
-        app._arb_fields(3)
-        app._arb_changed()
+        app._pick_tpl(3, a.arb_tpl.strip().upper())
     if a.view == "merge":
         app.after(300, lambda: app.mon_nb.select(1))
     if a.view == "seq":

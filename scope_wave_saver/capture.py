@@ -173,7 +173,8 @@ class Capture:
                         self.log(f"⚠ 第 {seq} 次：{e}（ARB {self._arb_txt}）→ 記為未觸發，換下一個")
                         self._summary_miss(seq, str(e))
                         self.done = seq
-                        self.emit("captured", {"seq": seq, "N": n_tot, "missed": True, "msg": str(e), "arb": self._arb_txt})
+                        self.emit("captured", {"seq": seq, "N": n_tot, "missed": True, "msg": str(e), "arb": self._arb_txt,
+                                               "nvme": getattr(self, "_nvme_last", None)})
                         seq += 1
                     else:
                         self.log(f"⚠ 第 {seq} 次：{e} → 重新 arm")
@@ -266,10 +267,52 @@ class Capture:
         self.log(f"▶ 繼續擷取：{names} 已重連，空檔 {gap:.1f} s")
 
     # ---------------------------------------------------------------- 一次
+    def _apply_trig(self, link):
+        """把這次擷取快照的主觸發（預設 C8 RSTn）寫到主示波器；示範模式改 SimBus.trig"""
+        t = self.cfg.get("trig") or {}
+        src = str(t.get("src") or "C8").split()[0]
+        level = t.get("level")
+        slope = str(t.get("slope") or "NEG").upper()
+        if level is None:
+            level = 0.9
+        dev = getattr(link, "dev", None)
+        if dev is not None and getattr(dev, "sim", False) and getattr(dev, "bus", None):
+            dev.bus.set_trig(src, float(level), slope)
+            return
+        from . import pmeas as PM
+        from . import settings as ST
+        ch = PM.ch_of(src) or 8
+        for cmd in ST.trigger_cmds(ch, level, slope):
+            link.w(cmd)
+
+    def _nvme_after(self, seq):
+        """選用：ARB 後 Linux PCIe rescan ＋ 列舉 NVMe。未啟用 → None（不連線、不 import paramiko）"""
+        ncfg = self.cfg.get("nvme") or {}
+        if not ncfg.get("on"):
+            return None
+        from . import nvmehost as NH
+        try:
+            h = NH.connect(ncfg.get("host") or "127.0.0.1", port=ncfg.get("port") or 22,
+                           user=ncfg.get("user") or "root", password=ncfg.get("password") or "",
+                           sim=bool(ncfg.get("sim", True)))
+            rows, note = NH.rescan_and_list(h, wait_s=float(ncfg.get("wait_s") or 2))
+            try:
+                h.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self.log(f"Linux NVMe rescan（第 {seq} 次）：{note}")
+            for d in rows:
+                self.log("  " + "　".join(f"{NH.COL_ZH[k]} {d.get(k) or '—'}" for k in NH.COLS))
+            return rows
+        except Exception as e:  # noqa: BLE001
+            self.log(f"⚠ Linux NVMe rescan 失敗（第 {seq} 次）：{e}")
+            return {"error": str(e)}
+
     def once(self, seq, n_tot=0):
         c = self.cfg
         ms, ss = self.links["master"], self.links["slave"]
         prog = lambda st, **kw: self.emit("progress", dict({"n": self.done, "N": n_tot, "seq": seq, "state": st}, **kw))  # noqa: E731
+        self._apply_trig(ms)
         prog("arming")
         a_s = arm_single(ss, self.stop_evt)                        # 輔先 arm
         a_m = arm_single(ms, self.stop_evt)                        # 主再 arm
@@ -368,16 +411,20 @@ class Capture:
                              slave_skew_s=float(c.get("skew_s") or 0.0), direction=c.get("direction", "auto"))
         verdict = SQ.overall(sq_rows)
         dtx = SQ.DIR_TXT.get(SQ.direction_of(sq_rows), "上電")
-        if c.get("seq_on", True):
+        if c.get("seq_on", True) or self._arb_on():
             files.append(SQ.save_csv(sq_rows, os.path.join(folder, f"{pre}{dtx}時序.csv"), c.get("ref", "VIN"), c.get("basis", "hi")))
             files.append(SQ.save_png(sq_rows, waves, os.path.join(folder, f"{pre}{dtx}時序.png"), ref=c.get("ref", "VIN"),
                                      title=f"#{seq}  {t_trig:%Y-%m-%d %H:%M:%S}  {dtx}時序 ＋ slew rate（參考 {c.get('ref', 'VIN')}）"
                                            + (f"  → {verdict}" if verdict else "")))
+        nvme_rows = self._nvme_after(seq) if self._arb_on() else None
         info = {"seq": seq, "time": t_trig.isoformat(timespec="milliseconds"), "slave_triggered": s_ok,
                 "idn": idn, "trig": c.get("trig_text", ""), "gap_before": self._gap_note,
                 "channels": {m: c["chans"][m] for m in c["chans"]}, "sequencing_verdict": verdict}
         if arb_info:
             info["arb"] = arb_info
+        if nvme_rows is not None:
+            info["nvme"] = nvme_rows if isinstance(nvme_rows, list) else nvme_rows
+        self._nvme_last = nvme_rows
         p = os.path.join(folder, f"{pre}info.json")
         with open(p, "w", encoding="utf-8") as f:
             json.dump(info, f, ensure_ascii=False, indent=1)
@@ -388,17 +435,22 @@ class Capture:
                  + ("" if s_ok else "（輔未觸發）") + f"；{dtx}" + (f"時序 {verdict}" if verdict else ""))
         return {"seq": seq, "N": n_tot, "time": t_trig.strftime("%H:%M:%S"), "folder": folder, "files": files,
                 "stack": out, "pngs": {ss.model: sp, ms.model: mp}, "waves": waves, "seq_rows": sq_rows,
-                "verdict": verdict, "pm_rows": pm_rows, "slave_ok": s_ok, "direction": SQ.direction_of(sq_rows)}
+                "verdict": verdict, "pm_rows": pm_rows, "slave_ok": s_ok, "direction": SQ.direction_of(sq_rows),
+                "nvme": getattr(self, "_nvme_last", None)}
 
     def _summary(self, seq, t_trig, s_ok, folder, sq_rows, verdict, pm_rows, nfiles):
         path = os.path.join(self.run_dir, "summary.csv")
         srt = sorted(sq_rows, key=lambda x: (x["model"] != SLAVE_DEF, x["ch"]))
+        # 與 ⑦ 同一套：延遲（對參考 = Δt）、10↔90 % 時間、slew rate
         rail_cols = [f"{x['role']}{x['name']} 延遲 ms" for x in srt if x["kind"] != "current"] + \
+                    [f"{x['role']}{x['name']} 10-90% ms" for x in srt] + \
                     [f"{x['role']}{x['name']} slew {'A' if x['kind'] == 'current' else 'V'}/ms" for x in srt]
         pm_cols = [f"{r['model']} {r['label']}" for r in pm_rows]
         if self._sum_cols is None:
+            nvme_cols = ["NVMe 數", "NVMe 裝置", "NVMe 型號", "NVMe 序號", "NVMe 容量", "NVMe 韌體", "NVMe BDF", "NVMe Link"] \
+                if (self.cfg.get("nvme") or {}).get("on") else []
             self._sum_cols = ["序號", "觸發時間", "方向", "輔觸發", "時序判定", "順序", "檔案數", "資料夾", "備註"] + \
-                (["ARB 範本", "ARB 掃描值", "ARB 參數"] if self._arb_on() else []) + rail_cols + pm_cols
+                (["ARB 範本", "ARB 掃描值", "ARB 參數"] if self._arb_on() else []) + nvme_cols + rail_cols + pm_cols
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 csv.writer(f).writerow(self._sum_cols)
             self._flush_pending()
@@ -407,9 +459,11 @@ class Capture:
              "檔案數": nfiles, "資料夾": os.path.basename(folder), "備註": self._gap_note}
         for x in sq_rows:
             d[f"{x['role']}{x['name']} 延遲 ms"] = "" if x.get("delay") is None else f"{x['delay'] * 1e3:.4f}"
+            d[f"{x['role']}{x['name']} 10-90% ms"] = "" if x.get("rise") is None else f"{x['rise'] * 1e3:.4f}"
             d[f"{x['role']}{x['name']} slew {'A' if x['kind'] == 'current' else 'V'}/ms"] = \
                 "" if x.get("slew") is None else f"{x['slew']:.5g}"
         d.update(self._arb_cols())
+        d.update(self._nvme_cols())
         for r in pm_rows:
             v = r["scope"] if r["scope"] is not None else r["pc"]
             d[f"{r['model']} {r['label']}"] = "" if v is None else f"{v:.6g}"
@@ -426,11 +480,24 @@ class Capture:
         return {"ARB 範本": "；".join(f"CH{x['ch']} {x['template_name']}" for x in chs),
                 "ARB 掃描值": "；".join(f"CH{x['ch']} {x.get('sweep', '')}" for x in chs if x.get("sweep")), "ARB 參數": par}
 
+    def _nvme_cols(self):
+        from . import nvmehost as NH
+        rows = getattr(self, "_nvme_last", None)
+        if isinstance(rows, list):
+            return NH.rows_for_csv(rows)
+        if isinstance(rows, dict) and rows.get("error"):
+            return {"NVMe 數": "", "NVMe 裝置": "", "NVMe 型號": "", "NVMe 序號": "", "NVMe 容量": "",
+                    "NVMe 韌體": "", "NVMe BDF": "", "NVMe Link": "", "備註": (rows.get("error") or "")}
+        return {}
+
     def _summary_miss(self, seq, msg):
         """ARB 跑完主沒觸發：summary 一列（沒有檔案）。欄位還沒定（第一次就沒觸發）→ 先暫存，等第一個有資料的一列一起寫"""
         d = {"序號": seq, "觸發時間": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], "方向": "未觸發",
              "輔觸發": "N", "時序判定": "", "檔案數": 0, "備註": (msg + "；" + self._gap_note).strip("；")}
         d.update(self._arb_cols())
+        if self._arb_on():
+            self._nvme_last = self._nvme_after(seq)
+            d.update(self._nvme_cols())
         self._gap_note = ""
         self._pending.append(d)
         if self._sum_cols is not None:
@@ -443,8 +510,10 @@ class Capture:
         if self._sum_cols is None:
             if not final:
                 return
+            nvme_cols = ["NVMe 數", "NVMe 裝置", "NVMe 型號", "NVMe 序號", "NVMe 容量", "NVMe 韌體", "NVMe BDF", "NVMe Link"] \
+                if (self.cfg.get("nvme") or {}).get("on") else []
             self._sum_cols = ["序號", "觸發時間", "方向", "輔觸發", "時序判定", "順序", "檔案數", "資料夾", "備註",
-                              "ARB 範本", "ARB 掃描值", "ARB 參數"]
+                              "ARB 範本", "ARB 掃描值", "ARB 參數"] + nvme_cols
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 csv.writer(f).writerow(self._sum_cols)
         with open(path, "a", newline="", encoding="utf-8") as f:
