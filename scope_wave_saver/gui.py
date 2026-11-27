@@ -2,9 +2,10 @@
 """雙示波器波形工具（示範模式 = 模擬示波器跑完整流程；--real 接實機，尚未實機測試）
 
 版型照 All in Test tool《UI設計風格說明.md》：u2core.theme.apply、工具列 ▶/■ + action_row、狀態列、
-UnifiedBody（左：① 儀器連線 + ②③… 設定卡片；右：執行監看分頁）。
+UnifiedBody（左：① 儀器連線 + ②③… 設定卡片；右：執行監看）。
+子視窗（①–⑧、時序表／圖、紀錄、NVMe…）可點 ▾/▸ 收合、拖標題排序、拖分隔條改大小、⧉ 獨立視窗；狀態寫入 ui_layout.json。
 右側主畫面 = 兩部示波器「實圖」（SCREEN_DUMP）上下無縫接合：上 = 輔（SLAVE）、下 = 主（MASTER），時間格對齊。
-「合一張」另一分頁（只看）：用讀回的波形資料在 PC 重畫。存檔一律存上下實圖。
+「合一張」可與實圖同時展開：用讀回的波形資料在 PC 重畫。存檔一律存上下實圖。
 連續擷取（capture.py）、上電時序（sequencing.py）、USB 自動重連（link.py）。
 
     U2_TOOL_DIR=<Autotest_tool 路徑> python -m scope_wave_saver.gui --demo
@@ -42,7 +43,7 @@ def _demo_waves(model, n=2000):
 
 
 class WaveSaverUI(tk.Tk):
-    def __init__(self, demo=True):
+    def __init__(self, demo=True, layout=""):
         super().__init__()
         self.title("雙示波器波形工具 v1.1（8208HD ＋ 6104B · MASTER / SLAVE）" + ("— 示範（模擬示波器）" if demo else ""))
         self.demo = demo
@@ -57,6 +58,10 @@ class WaveSaverUI(tk.Tk):
         self.bus = None
         self.links = {}
         self.psu = None                           # N6705 Link（ARB）
+        from .foldui import LayoutStore
+        self.ui_store = LayoutStore(layout)
+        self.folds = {}
+        self.nvme_tab = None
         self._build()
         self._make_links()
         self.after(100, self._pump)
@@ -140,6 +145,8 @@ class WaveSaverUI(tk.Tk):
         self.lb_status.pack(side="right", fill="x", expand=True)
         if self.demo:
             ttk.Label(bar2, text="【示範模式 · 模擬示波器】", foreground="#9a6700").pack(side="left")
+        ttk.Label(bar2, text="　子視窗：點 ▾/▸ 收合，拖標題改順序，拖分隔條改大小，⧉ 獨立視窗",
+                  style="Muted.TLabel").pack(side="left")
 
         # 版型例外：不收進 v9 切換列（一次只看一個區塊）→ 維持左設定 / 右波形並排，觸發設定和兩台波形同時看得到
         from u2core import pagetpl
@@ -158,16 +165,82 @@ class WaveSaverUI(tk.Tk):
         except Exception:  # noqa: BLE001
             pass
         self._conn(body)
+        self._fold_conn(body)
         page = body.page
         page.columnconfigure(0, weight=1)
-        self._trigger(body.card("觸發設定（MASTER 觸發通道 / 準位 / 斜率）", 0, 0, num=2))
-        self._channels(body.card("通道 ＋ bus name", 1, 0, num=3))
-        self._pm(body.card("量測 P1–P24（每台示波器）", 2, 0, num=4))
-        self._save(body.card("存檔（中控電腦）", 3, 0, num=5))
-        self._capture_card(body.card("連續擷取（觸發次數）", 4, 0, num=6))
-        self._seq_card(body.card("上電時序（PC 計算）", 5, 0, num=7))
-        self._arb_card(body.card("N6705 ARB 啟動＋擷取（Ramp / Brownout margin / Instant ON-OFF-ON）", 6, 0, num=8))
-        self._monitor(body.right_nb)
+        page.rowconfigure(0, weight=1)
+        from .foldui import FoldStack
+        stack = FoldStack(page, store=self.ui_store, group="left")
+        stack.grid(row=0, column=0, sticky="nsew")
+        self.left_stack = stack
+        self._trigger(self._left_card("trig", "觸發設定（MASTER 觸發通道 / 準位 / 斜率）", 2))
+        self._channels(self._left_card("ch", "通道 ＋ bus name", 3))
+        self._pm(self._left_card("pm", "量測 P1–P24（每台示波器）", 4))
+        self._save(self._left_card("save", "存檔（中控電腦）", 5))
+        self._capture_card(self._left_card("cap", "連續擷取（觸發次數）", 6))
+        self._seq_card(self._left_card("seq", "上電時序（PC 計算）", 7))
+        self._arb_card(self._left_card("arb", "N6705 ARB 啟動＋擷取（Ramp / Brownout margin / Instant ON-OFF-ON）", 8))
+        self._monitor(body)
+        self.after(200, self._restore_sashes)
+        self.after(400, lambda: self.body.pw.bind("<ButtonRelease-1>", lambda _e: self._persist_sash(), add="+"))
+
+
+    def _left_card(self, key, title, num, default_open=True):
+        from .foldui import FoldCard, numbered
+        c = FoldCard(self.left_stack, key, numbered(num, title), store=self.ui_store,
+                     default_open=default_open, tip=getattr(self, "Tip", None))
+        self.left_stack.add(c)
+        self.folds[key] = c
+        return c.body
+
+    def _fold_conn(self, body):
+        from .foldui import adapt_section
+        box = getattr(body.conn, "master", None)
+        if box is None:
+            return
+        st = adapt_section(box, "conn", "① 儀器連線", store=self.ui_store, tip=getattr(self, "Tip", None))
+        if st:
+            self.folds["conn"] = st
+
+    def _restore_sashes(self):
+        sp = self.ui_store.sash("left_right")
+        if not sp or not hasattr(self, "body"):
+            return
+        self.body._sash_done = True
+        try:
+            self.body.pw.sashpos(0, int(sp))
+        except tk.TclError:
+            pass
+
+    def _persist_sash(self):
+        try:
+            self.ui_store.set_sash("left_right", self.body.pw.sashpos(0))
+            if getattr(self, "seq_pw", None) is not None:
+                self.ui_store.set_sash("seq_table_plot", self.seq_pw.sashpos(0))
+        except tk.TclError:
+            pass
+
+    def _apply_fold(self, fold="", unfold=""):
+        """測試 / 截圖：強制收合或展開指定 key（逗號分隔：conn,trig,ch,pm,save,cap,seq,arb,shots,waves,seqv,pmt,saved,log,nvme）。"""
+        def keys(s):
+            return [k.strip() for k in (s or "").split(",") if k.strip()]
+        for k in keys(fold):
+            self._set_fold(k, False)
+        for k in keys(unfold):
+            self._set_fold(k, True)
+
+    def _set_fold(self, key, opened):
+        # 時序監看卡 key 用 seqv，避免和左欄 ⑦ seq 撞名
+        alias = {"timing": "seqv", "時序": "seqv", "合成": "waves", "合一": "waves",
+                 "實圖": "shots", "紀錄": "log", "畫面": "shots"}
+        key = alias.get(key, key)
+        f = self.folds.get(key)
+        if f is None:
+            return
+        if hasattr(f, "set_open"):
+            f.set_open(opened)
+        elif isinstance(f, dict) and "set_open" in f:
+            f["set_open"](opened)
 
     # ---- ① 儀器連線（自動連線；對時 / Auto scale 背景做，只寫紀錄，失敗才顯示）
     def _conn(self, body):
@@ -337,12 +410,7 @@ class WaveSaverUI(tk.Tk):
         """斜率跟目前啟用的 ARB 範本走：Ramp → Rising，Brownout / ON-OFF-ON → Falling。使用者改過斜率則不覆蓋。"""
         if not force and getattr(self, "_trig_slope_user", False):
             return
-        tpl = ""
-        for ch in (3, 1, 2, 4):          # VIN 預設 CH3 優先
-            k = f"arb{ch}_tpl"
-            if k in self.v and self.v.get(f"arb{ch}_en") and self.v[f"arb{ch}_en"].get() and self.v[k].get() != "NONE":
-                tpl = self.v[k].get()
-                break
+        tpl = (self.v["arb_tpl"].get() if self.v.get("arb_tpl") else "") or ""
         sl = self._slope_for_tpl(tpl)
         if sl:
             self.v["trig_slope"].set(sl)
@@ -460,10 +528,31 @@ class WaveSaverUI(tk.Tk):
                   style="U.Muted.TLabel").pack(anchor="w", pady=(4, 0))
 
     # ---- 右：執行監看（兩台示波器實圖同時看）
-    def _monitor(self, nb):
-        rf = ttk.Frame(nb, padding=2)
-        nb.add(rf, text="  兩台實機畫面（實圖）  ")
-        self.v_lay = tk.StringVar(self, value="stack")       # 排列只留上下（輔 上 / 主 下，無縫）
+    def _right_card(self, key, title, default_open=True, weight=1.0):
+        from .foldui import FoldCard
+        c = FoldCard(self.right_stack, key, title, store=self.ui_store,
+                     default_open=default_open, tip=getattr(self, "Tip", None))
+        self.right_stack.add(c, weight=weight)
+        self.folds[key] = c
+        return c.body
+
+    def _monitor(self, body):
+        """右欄改為可收合、可拉分隔條、可拖排序的子視窗（不再只用分頁一次只看一個）。"""
+        from .foldui import SashStack
+        try:
+            body.right_nb.pack_forget()
+        except tk.TclError:
+            pass
+        stack = SashStack(body.right, store=self.ui_store, group="right",
+                          defaults={"shots": 3.2, "waves": 1.6, "seqv": 2.0, "pmt": 1.0,
+                                    "saved": 0.8, "log": 1.1, "nvme": 1.0})
+        stack.pack(fill="both", expand=True, padx=(6, 0))
+        self.right_stack = stack
+        self.mon_nb = None
+        self.nvme_tab = None
+        # -- 兩台實機畫面
+        rf = self._right_card("shots", "兩台實機畫面（實圖，輔上／主下）", default_open=True, weight=3.2)
+        self.v_lay = tk.StringVar(self, value="stack")
         tb = ttk.Frame(rf)
         tb.pack(fill="x")
         ttk.Label(tb, text="更新").pack(side="left")
@@ -471,7 +560,6 @@ class WaveSaverUI(tk.Tk):
                      state="readonly", width=6).pack(side="left", padx=2)
         ttk.Checkbutton(tb, text="即時更新", variable=self._bv("live", True)).pack(side="left", padx=6)
         ttk.Checkbutton(tb, text="擷取中暫停（不搶 USB）", variable=self._bv("pause_busy", True)).pack(side="left")
-        # 共用標題列（兩台的狀態、存檔 / 放大都在最上面；上下排時兩張圖中間不放任何東西）
         hd = tk.Frame(rf, bg="#0E9BD8")
         hd.pack(fill="x", pady=(4, 0))
         self.lb_head = tk.Label(hd, text="", bg="#0E9BD8", fg="white", font=(self.fam, 10, "bold"))
@@ -490,42 +578,41 @@ class WaveSaverUI(tk.Tk):
         self.stack_lab = tk.Label(self.shot_area, bg="#000000", bd=0, highlightthickness=0)
         self.stack_tk = None
         self.shot_area.bind("<Configure>", lambda _e: self.after_idle(self._fit_shots))
-        nb.bind("<<NotebookTabChanged>>", self._tab_changed, add="+")
-        # PC 合成波形（合一張只能用讀回的波形資料重畫：兩張實圖的畫面配置 / 格數不同，無法疊成一張實圖）
-        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-        from matplotlib.figure import Figure
-        wf = ttk.Frame(nb, padding=2)
-        nb.add(wf, text="  合一張（PC 合成波形）  ")
+        # -- 合一張波形（預設收合）
+        wf = self._right_card("waves", "合一張（PC 合成波形）", default_open=False, weight=1.6)
         tb2 = ttk.Frame(wf)
         tb2.pack(fill="x")
         self.v_view = tk.StringVar(self, value="merge")
         ttk.Checkbutton(tb2, text="每通道分開排（stack）", variable=self._bv("stack", True), command=self._draw).pack(side="left")
         ttk.Label(tb2, text="只看：兩台讀回的波形資料（WAVEFORM? ALL）畫在同一時間軸，觸發 t = 0 對齊；存檔一律存上下實圖",
                   style="U.Muted.TLabel").pack(side="left", padx=8)
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        from matplotlib.figure import Figure
         self.fig = Figure(figsize=(11, 8.5), dpi=96, facecolor="#FFFFFF")
         self.canvas = FigureCanvasTkAgg(self.fig, wf)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
         self.waves = {m: _demo_waves(m) for m in (MASTER_DEF, SLAVE_DEF)}
         self._draw()
-        self._seq_tab(nb)
-        pf = ttk.Frame(nb, padding=4)
-        nb.add(pf, text="  P 量測結果  ")
-        tv = ttk.Treeview(pf, columns=("sc", "p", "lab", "inst", "pc", "pct", "ok"), show="headings", height=20)
+        # -- 時序（預設收合；擷取後會展開）
+        seqf = self._right_card("seqv", "上 / 下電時序（表＋圖，可拉分隔條）", default_open=False, weight=2.0)
+        self._seq_tab(seqf)
+        # -- P 量測（預設收合）
+        pf = self._right_card("pmt", "P 量測結果", default_open=False, weight=1.0)
+        tv = ttk.Treeview(pf, columns=("sc", "p", "lab", "inst", "pc", "pct", "ok"), show="headings", height=8)
         for c, h, w in (("sc", "示波器", 80), ("p", "P", 40), ("lab", "量測", 220), ("inst", "示波器值", 110),
                         ("pc", "PC 值", 110), ("pct", "差異 %", 70), ("ok", "比對", 70)):
             tv.heading(c, text=h)
             tv.column(c, width=w, anchor="center")
         tv.pack(fill="both", expand=True)
         self.tv_pm = tv
-        sf = ttk.Frame(nb, padding=4)
-        nb.add(sf, text="  存檔結果  ")
-        self.saved_txt = tk.Text(sf, font=("DejaVu Sans Mono", 9), height=20)
+        # -- 存檔結果（預設收合）
+        sf = self._right_card("saved", "存檔結果", default_open=False, weight=0.8)
+        self.saved_txt = tk.Text(sf, font=("DejaVu Sans Mono", 9), height=8)
         self.saved_txt.pack(fill="both", expand=True)
-        lg = ttk.Frame(nb, padding=4)
-        nb.add(lg, text="  紀錄  ")
-        self.log_txt = tk.Text(lg, bg="#0d1117", fg="#c9d1d9", font=("DejaVu Sans Mono", 9), height=20)
+        # -- 紀錄（預設展開，可跟畫面一起看、拉分隔條改高度）
+        lg = self._right_card("log", "紀錄", default_open=True, weight=1.1)
+        self.log_txt = tk.Text(lg, bg="#0d1117", fg="#c9d1d9", font=("DejaVu Sans Mono", 9), height=8)
         self.log_txt.pack(fill="both", expand=True)
-        self.mon_nb = nb
         self._layout_shots()
 
     def _tab_changed(self, _e=None):
@@ -692,32 +779,46 @@ class WaveSaverUI(tk.Tk):
         return {"direction": d, "basis": basis, "skew_s": skew, "ref": self.v["seq_ref"].get()}
 
     # ---- 右：上 / 下電時序分頁
-    def _seq_tab(self, nb):
+    def _seq_tab(self, f):
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         from matplotlib.figure import Figure
         from . import sequencing as SQ
-        f = ttk.Frame(nb, padding=2)
-        nb.add(f, text="  上 / 下電時序  ")
-        hd = ttk.Frame(f)
+        pw = ttk.PanedWindow(f, orient="vertical")
+        pw.pack(fill="both", expand=True)
+        top, bot = ttk.Frame(pw), ttk.Frame(pw)
+        pw.add(top, weight=1)
+        pw.add(bot, weight=2)
+        self.seq_pw = pw
+        hd = ttk.Frame(top)
         hd.pack(fill="x")
         self.v_seq_sum = tk.StringVar(self, value="")
         ttk.Label(hd, textvariable=self.v_seq_sum, font=(self.fam, 10, "bold"), foreground="#0E9BD8").pack(side="left")
         ttk.Button(hd, text="⟳ 用目前設定重算", style="U.Small.TButton", command=self._seq_recalc).pack(side="right")
         cols = ("dir", "ord", "sc", "ch", "rail", "ton", "rise", "slew", "dly", "lim", "ok", "note")
         heads = ("方向", "順序", "示波器", "CH", "rail", "上/下電 ms", "10↔90% ms", "slew rate", "延遲 ms", "限制 ms", "判定", "備註")
-        tv = ttk.Treeview(f, columns=cols, show="headings", height=12)
+        tv = ttk.Treeview(top, columns=cols, show="headings", height=8)
         for c, h, w in zip(cols, heads, (40, 36, 80, 32, 64, 70, 72, 100, 64, 76, 48, 120)):
             tv.heading(c, text=h)
             tv.column(c, width=w, anchor="center", stretch=c == "note")
         tv.tag_configure("FAIL", foreground="#cf222e")
         tv.tag_configure("PASS", foreground="#1a7f37")
-        tv.pack(fill="x")
+        tv.pack(fill="both", expand=True)
         self.tv_seq = tv
         self.fig_seq = Figure(figsize=(11, 5.6), dpi=96, facecolor="#FFFFFF")
-        self.cv_seq = FigureCanvasTkAgg(self.fig_seq, f)
+        self.cv_seq = FigureCanvasTkAgg(self.fig_seq, bot)
         self.cv_seq.get_tk_widget().pack(fill="both", expand=True)
         self._SQ = SQ
+        sp = self.ui_store.sash("seq_table_plot")
+        if sp:
+            self.after(250, lambda v=int(sp): self._safe_sash(self.seq_pw, 0, v))
+        pw.bind("<ButtonRelease-1>", lambda _e: self._persist_sash() or self.ui_store.save(), add="+")
         self.after(300, self._seq_recalc)
+
+    def _safe_sash(self, pw, i, val):
+        try:
+            pw.sashpos(i, int(val))
+        except tk.TclError:
+            pass
 
     def _waves_flat(self):
         return {(m, ch): w for m, ws in self.waves.items() for ch, w in ws.items()}
@@ -928,7 +1029,7 @@ class WaveSaverUI(tk.Tk):
         self.after(100, self._pump)
 
     # ---- ⑧ N6705 ARB（參數式範本，不用編點）
-    ARB_CH_DEF = {1: ("", False), 2: ("", False), 3: ("VIN 12V", True), 4: ("", False)}   # Autotest_tool：DUT 12 V 預設 CH3
+    ARB_CH_LABEL = {1: "CH1", 2: "CH2", 3: "VIN 12V", 4: "CH4"}   # 預設標籤；CH3 = DUT VIN（同 Autotest_tool）
     ARB_MAIN_CH, ARB_ADV_CH = (1, 3), (2, 4)
     ARB_TPL_BTNS = (
         ("RAMP", "Ramp", "上升 / 下降", "▲", "#1a7f37"),
@@ -937,22 +1038,63 @@ class WaveSaverUI(tk.Tk):
     )
 
     def _arb_card(self, f):
+        """一套共用範本＋參數，套到「一個」選中的 N6705 通道（預設 CH3）。"""
         from . import arbtpl as T
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         from matplotlib.figure import Figure
         self._T = T
-        self.arb_par, self.arb_tpl_btns = {}, {}
-        for ch in self.ARB_MAIN_CH:
-            self._arb_chan(f, ch, prominent=True)
+        self._sv("arb_ch", "3")
+        self._sv("arb_tpl", "RAMP")
+        self._arb_lb_by_ch = dict(self.ARB_CH_LABEL)
+        self._sv("arb_lb", self._arb_lb_by_ch[3])
+        for key, *_r in T.TEMPLATES:
+            for k, _lbl, d, _u, _sw in T.FIELDS.get(key, []):
+                v = self._sv(f"arb_{key}_{k}", d)
+                v.trace_add("write", lambda *_: self._arb_changed())
+        # -- 通道選擇（通常只會用一個）
+        chrow = ttk.Frame(f)
+        chrow.pack(fill="x", pady=(2, 0))
+        ttk.Label(chrow, text="輸出通道", style="Trig.TLabel").pack(side="left", padx=(0, 8))
+        self.arb_ch_btns = {}
+        self.arb_ch_main = ttk.Frame(chrow)
+        self.arb_ch_main.pack(side="left")
+        for ch, sub in ((1, "CH1"), (3, "CH3　VIN 12V")):
+            self._arb_mk_ch_btn(self.arb_ch_main, ch, sub)
+        ttk.Label(chrow, text="　標籤").pack(side="left", padx=(12, 0))
+        ttk.Entry(chrow, textvariable=self.v["arb_lb"], width=12).pack(side="left", padx=4)
+        ttk.Label(chrow, text="（範本通用，一次只跑這一個通道；其他通道不動）",
+                  style="U.Muted.TLabel").pack(side="left", padx=6)
+        # -- 共用範本按鈕
+        bf = ttk.Frame(f)
+        bf.pack(fill="x", pady=(8, 2))
+        self.arb_tpl_btns = {}
+        for key, title, sub, icon, col in self.ARB_TPL_BTNS:
+            b = tk.Button(bf, text=f"{icon}  {title}\n{sub}", justify="center",
+                          font=(self.fam, 11, "bold"), width=18, height=2, cursor="hand2",
+                          wraplength=160, bd=3, relief="raised",
+                          command=lambda key=key: self._pick_tpl(key))
+            b.pack(side="left", padx=4, pady=2, fill="x", expand=True)
+            b._sel_color = col
+            self.arb_tpl_btns[key] = b
+        self.arb_par = ttk.Frame(f)
+        self.arb_par.pack(fill="x", pady=(4, 0))
+        self._arb_fields()
+        self._style_tpl_btns()
+        self._style_ch_btns()
+        # -- 進階：CH2 / CH4 也可選（同一套範本）
         self.arb_adv = ttk.Frame(f)
-        for ch in self.ARB_ADV_CH:
-            self._arb_chan(self.arb_adv, ch, prominent=False)
-        adv_btn = ttk.Button(f, text="▸ 進階：CH2 / CH4（通常不用）", style="U.Small.TButton")
+        adv_row = ttk.Frame(self.arb_adv)
+        adv_row.pack(fill="x")
+        ttk.Label(adv_row, text="也可選", style="U.Muted.TLabel").pack(side="left", padx=(0, 6))
+        for ch, sub in ((2, "CH2"), (4, "CH4")):
+            self._arb_mk_ch_btn(adv_row, ch, sub)
+        ttk.Label(adv_row, text="（仍是同一套範本，一次只跑一個通道）", style="U.Muted.TLabel").pack(side="left", padx=8)
+        adv_btn = ttk.Button(f, text="▸ 進階：也可選 CH2 / CH4", style="U.Small.TButton")
 
         def _tog_adv():
             if self.arb_adv.winfo_ismapped():
                 self.arb_adv.pack_forget()
-                adv_btn.configure(text="▸ 進階：CH2 / CH4（通常不用）")
+                adv_btn.configure(text="▸ 進階：也可選 CH2 / CH4")
             else:
                 self.arb_adv.pack(fill="x", after=adv_btn, pady=(4, 0))
                 adv_btn.configure(text="▾ 收合 CH2 / CH4")
@@ -985,7 +1127,7 @@ class WaveSaverUI(tk.Tk):
         self.fig_arb = Figure(figsize=(8.2, 1.7), dpi=96, facecolor="#FFFFFF")
         self.cv_arb = FigureCanvasTkAgg(self.fig_arb, f)
         self.cv_arb.get_tk_widget().pack(fill="x", pady=(4, 0))
-        ttk.Label(f, text="流程：輔 arm → 主 arm（預設 C8 RSTn）→ 下載 ARB → OUTP ON → *TRG → 等主觸發 → 讀 / 存；"
+        ttk.Label(f, text="流程：輔 arm → 主 arm（預設 C8 RSTn）→ 下載 ARB 到選中的那一個 N6705 通道 → OUTP ON → *TRG → 等主觸發 → 讀 / 存；"
                           "同時用 ⑦ 的上 / 下電時序算每條 rail 的 10↔90 % 時間、slew rate、對參考的 Δt，寫入時序 CSV ＋ summary。"
                           "ARB 跑完主沒觸發（RSTn 沒跳，例淺 Brownout）→ summary 記「未觸發」。"
                           "掃描用 / 分隔（-10%/-20%/-50%、1ms/2ms/5ms）。",
@@ -993,68 +1135,71 @@ class WaveSaverUI(tk.Tk):
         self._nvme_block(f)
         self._arb_job = None
         self.after(400, self._arb_preview)
-        self.after(450, lambda: (self._style_tpl_btns(), self._sync_trig_from_tpl()))
+        self.after(450, lambda: (self._style_tpl_btns(), self._style_ch_btns(), self._sync_trig_from_tpl()))
 
-    def _arb_chan(self, parent, ch, prominent=True):
-        T = self._T
-        lb, en = self.ARB_CH_DEF[ch]
-        box = ttk.LabelFrame(parent, text=f" N6705 CH{ch} ", padding=(8, 6, 8, 6))
-        box.pack(fill="x", pady=(4, 0))
-        top = ttk.Frame(box)
-        top.pack(fill="x")
-        ttk.Checkbutton(top, text="使用", variable=self._bv(f"arb{ch}_en", en),
-                        command=lambda ch=ch: (self._style_tpl_btns(ch), self._arb_changed(), self._sync_trig_from_tpl())
-                        ).pack(side="left")
-        ttk.Label(top, text="　標籤").pack(side="left")
-        ttk.Entry(top, textvariable=self._sv(f"arb{ch}_lb", lb or f"CH{ch}"), width=12).pack(side="left", padx=(4, 10))
-        self._sv(f"arb{ch}_tpl", "RAMP" if en else "NONE")
-        bf = ttk.Frame(box)
-        bf.pack(fill="x", pady=(6, 2))
-        self.arb_tpl_btns[ch] = {}
-        for key, title, sub, icon, col in self.ARB_TPL_BTNS:
-            b = tk.Button(bf, text=f"{icon}  {title}\n{sub}", justify="center",
-                          font=(self.fam, 11, "bold"), width=18, height=2, cursor="hand2",
-                          wraplength=160, bd=3, relief="raised",
-                          command=lambda ch=ch, key=key: self._pick_tpl(ch, key))
-            b.pack(side="left", padx=4, pady=2, fill="x", expand=True)
-            b._sel_color = col
-            self.arb_tpl_btns[ch][key] = b
-        par = ttk.Frame(box)
-        par.pack(fill="x", pady=(4, 0))
-        self.arb_par[ch] = par
-        for key, *_r in T.TEMPLATES:
-            for k, _lbl, d, _u, _sw in T.FIELDS.get(key, []):
-                v = self._sv(f"arb{ch}_{key}_{k}", d)
-                v.trace_add("write", lambda *_: self._arb_changed())
-        self._arb_fields(ch)
-        self._style_tpl_btns(ch)
+    def _arb_mk_ch_btn(self, parent, ch, title):
+        b = tk.Button(parent, text=title, justify="center", font=(self.fam, 12, "bold"),
+                      width=14, height=1, cursor="hand2", bd=3, relief="raised",
+                      command=lambda ch=ch: self._pick_ch(ch))
+        b.pack(side="left", padx=3, pady=2)
+        self.arb_ch_btns[ch] = b
+        return b
 
-    def _pick_tpl(self, ch, key):
-        self.v[f"arb{ch}_en"].set(True)
-        self.v[f"arb{ch}_tpl"].set(key)
-        self._trig_slope_user = False
-        self._sync_trig_from_tpl(force=True)
-        self._arb_fields(ch)
-        self._style_tpl_btns(ch)
+    def _arb_sel_ch(self):
+        try:
+            return int(self.v["arb_ch"].get() or 3)
+        except ValueError:
+            return 3
+
+    def _pick_ch(self, ch):
+        """切到這一個輸出通道；範本與參數不變，只換套用的通道。"""
+        prev = self._arb_sel_ch()
+        self._arb_lb_by_ch[prev] = self.v["arb_lb"].get().strip() or self.ARB_CH_LABEL.get(prev, f"CH{prev}")
+        self.v["arb_ch"].set(str(int(ch)))
+        self.v["arb_lb"].set(self._arb_lb_by_ch.get(int(ch), self.ARB_CH_LABEL.get(int(ch), f"CH{ch}")))
+        self._style_ch_btns()
         self._arb_changed()
 
+    def _pick_tpl(self, key, ch=None):
+        """選共用範本。ch 若有給，一併切到那個輸出通道（相容舊的 --arb-tpl 呼叫）。"""
+        if ch is not None:
+            self._pick_ch(int(ch))
+        self.v["arb_tpl"].set(key)
+        self._trig_slope_user = False
+        self._sync_trig_from_tpl(force=True)
+        self._arb_fields()
+        self._style_tpl_btns()
+        self._arb_changed()
+
+    def _style_ch_btns(self):
+        cur = self._arb_sel_ch()
+        for ch, b in getattr(self, "arb_ch_btns", {}).items():
+            sel = ch == cur
+            col = "#0E9BD8"
+            b.configure(bg=col if sel else "#f6f8fa",
+                        fg="#ffffff" if sel else "#1f2328",
+                        relief="sunken" if sel else "raised",
+                        bd=4 if sel else 2,
+                        font=(self.fam, 12, "bold") if sel else (self.fam, 12),
+                        highlightbackground=col if sel else "#d0d7de",
+                        highlightthickness=2 if sel else 1,
+                        activebackground=col if sel else "#eaeef2",
+                        activeforeground="#ffffff" if sel else "#1f2328")
+
     def _style_tpl_btns(self, ch=None):
-        chs = [ch] if ch else list(self.arb_tpl_btns)
-        for c in chs:
-            tpl = self.v[f"arb{c}_tpl"].get() if f"arb{c}_tpl" in self.v else "NONE"
-            on = bool(self.v.get(f"arb{c}_en") and self.v[f"arb{c}_en"].get() and tpl != "NONE")
-            for key, b in self.arb_tpl_btns.get(c, {}).items():
-                sel = on and key == tpl
-                col = getattr(b, "_sel_color", "#0E9BD8")
-                b.configure(bg=col if sel else "#f6f8fa",
-                            fg="#ffffff" if sel else "#1f2328",
-                            relief="sunken" if sel else "raised",
-                            bd=4 if sel else 2,
-                            font=(self.fam, 11, "bold") if sel else (self.fam, 11),
-                            highlightbackground=col if sel else "#d0d7de",
-                            highlightthickness=2 if sel else 1,
-                            activebackground=col if sel else "#eaeef2",
-                            activeforeground="#ffffff" if sel else "#1f2328")
+        tpl = self.v["arb_tpl"].get() if self.v.get("arb_tpl") else "RAMP"
+        for key, b in getattr(self, "arb_tpl_btns", {}).items():
+            sel = key == tpl
+            col = getattr(b, "_sel_color", "#0E9BD8")
+            b.configure(bg=col if sel else "#f6f8fa",
+                        fg="#ffffff" if sel else "#1f2328",
+                        relief="sunken" if sel else "raised",
+                        bd=4 if sel else 2,
+                        font=(self.fam, 11, "bold") if sel else (self.fam, 11),
+                        highlightbackground=col if sel else "#d0d7de",
+                        highlightthickness=2 if sel else 1,
+                        activebackground=col if sel else "#eaeef2",
+                        activeforeground="#ffffff" if sel else "#1f2328")
 
     def _nvme_block(self, f):
         """Linux NVMe rescan：預設關閉；沒勾就不佔空間、不連線、不 import paramiko。"""
@@ -1101,8 +1246,7 @@ class WaveSaverUI(tk.Tk):
         if self.nvme_tab is not None:
             return
         from . import nvmehost as NH
-        pf = ttk.Frame(self.mon_nb, padding=4)
-        self.mon_nb.add(pf, text="  NVMe 認碟  ")
+        pf = self._right_card("nvme", "NVMe 認碟", default_open=True, weight=1.0)
         ttk.Label(pf, text="ARB 擷取後（或按 ↻ 立刻 rescan）列出每顆 NVMe。示範模式為模擬資料。",
                   style="U.Muted.TLabel").pack(anchor="w")
         cols = NH.COLS
@@ -1115,14 +1259,21 @@ class WaveSaverUI(tk.Tk):
         self.nvme_tab = pf
 
     def _nvme_drop_tab(self):
-        t = self.nvme_tab
-        if t is None:
+        if self.nvme_tab is None:
             return
-        try:
-            self.mon_nb.forget(t)
-        except tk.TclError:
-            pass
+        if getattr(self, "right_stack", None) is not None:
+            c = self.right_stack.by_key("nvme")
+            if c is not None:
+                if c.win is not None:
+                    c.dock()
+                self.right_stack.remove("nvme")
+                self.folds.pop("nvme", None)
+                try:
+                    c.destroy()
+                except tk.TclError:
+                    pass
         self.nvme_tab = None
+        self.tv_nvme_tab = None
 
     def _nvme_fill(self, drives):
         rows = drives if isinstance(drives, list) else []
@@ -1157,6 +1308,18 @@ class WaveSaverUI(tk.Tk):
         threading.Thread(target=job, daemon=True).start()
 
     def _select_mon_tab(self, hint):
+        """展開對應的右欄子視窗（相容舊的分頁名稱）。"""
+        mp = {"時序": "seqv", "NVMe": "nvme", "認碟": "nvme", "合成": "waves", "合一": "waves",
+              "實圖": "shots", "畫面": "shots", "紀錄": "log", "存檔": "saved", "P 量": "pmt", "量測": "pmt"}
+        key = None
+        for k, v in mp.items():
+            if k in (hint or ""):
+                key = v
+                break
+        if key:
+            self._set_fold(key, True)
+            return
+        # 分頁殘留（理論上沒有）
         nb = getattr(self, "mon_nb", None)
         if nb is None:
             return
@@ -1168,52 +1331,52 @@ class WaveSaverUI(tk.Tk):
         except tk.TclError:
             pass
 
-    def _arb_fields(self, ch):
+    def _arb_fields(self, ch=None):
         T = self._T
-        par = self.arb_par[ch]
+        par = self.arb_par
         for w in par.winfo_children():
             w.destroy()
-        tpl = self.v[f"arb{ch}_tpl"].get()
+        tpl = self.v["arb_tpl"].get()
         flds = T.FIELDS.get(tpl, [])
         if not flds:
-            ttk.Label(par, text="這個通道不跑 ARB（輸出不動）", style="U.Muted.TLabel").grid(row=0, column=0, sticky="w")
+            ttk.Label(par, text="請選一個範本", style="U.Muted.TLabel").grid(row=0, column=0, sticky="w")
             return
         for i, (k, lbl, _d, u, sw) in enumerate(flds):
             r, c = divmod(i, 4)
             ttk.Label(par, text=lbl + ("　⇄掃描" if sw else "")).grid(row=r * 2, column=c, sticky="w", padx=(0, 10))
-            e = ttk.Entry(par, textvariable=self.v[f"arb{ch}_{tpl}_{k}"], width=16 if sw else 9)
+            e = ttk.Entry(par, textvariable=self.v[f"arb_{tpl}_{k}"], width=16 if sw else 9)
             e.grid(row=r * 2 + 1, column=c, sticky="w", padx=(0, 10), pady=(0, 4))
         for c in range(4):
             par.columnconfigure(c, weight=1)
 
-    def _arb_params(self, ch):
-        tpl = self.v[f"arb{ch}_tpl"].get()
-        return tpl, {k: self.v[f"arb{ch}_{tpl}_{k}"].get() for k, *_r in self._T.FIELDS.get(tpl, [])}
+    def _arb_params(self, ch=None):
+        tpl = self.v["arb_tpl"].get()
+        return tpl, {k: self.v[f"arb_{tpl}_{k}"].get() for k, *_r in self._T.FIELDS.get(tpl, [])}
 
     def _arb_cfg(self):
-        """UI → Capture cfg["arb"]（驗證每個掃描值；有錯 → ValueError）"""
+        """UI → Capture cfg["arb"]：只套用選中的那一個通道（驗證每個掃描值；有錯 → ValueError）"""
         from u2core import arbmodule as AM
         T = self._T
-        chans, nsw = [], 1
-        for ch in (1, 2, 3, 4):
-            tpl, p = self._arb_params(ch)
-            if not self.v[f"arb{ch}_en"].get() or tpl == "NONE":
-                continue
-            ns = T.n_sweep(tpl, p)
-            nsw = max(nsw, ns)
-            keep = None
-            for idx in range(ns):
-                try:
-                    c = T.build(tpl, p, ch=ch, idx=idx)
-                except Exception as e:  # noqa: BLE001
-                    raise ValueError(f"CH{ch} 參數：{e}") from e
-                err, _w = AM.validate(c)
-                if err:
-                    raise ValueError(f"CH{ch} {T.TPL_NAME[tpl]}：" + "；".join(err[:3]))
-                keep = float(c.dc_value)
-            chans.append({"ch": ch, "label": self.v[f"arb{ch}_lb"].get().strip(), "tpl": tpl, "p": p, "keep_v": keep})
+        ch = self._arb_sel_ch()
+        tpl, p = self._arb_params()
+        if not tpl or tpl == "NONE":
+            return {"chans": [], "sweep_mode": "each", "nsweep": 1,
+                    "end": "keep" if self.v["arb_end"].get().startswith("維持") else "off"}
+        ns = T.n_sweep(tpl, p)
+        keep = None
+        for idx in range(ns):
+            try:
+                c = T.build(tpl, p, ch=ch, idx=idx)
+            except Exception as e:  # noqa: BLE001
+                raise ValueError(f"CH{ch} 參數：{e}") from e
+            err, _w = AM.validate(c)
+            if err:
+                raise ValueError(f"CH{ch} {T.TPL_NAME[tpl]}：" + "；".join(err[:3]))
+            keep = float(c.dc_value)
+        lb = self.v["arb_lb"].get().strip() or self.ARB_CH_LABEL.get(ch, f"CH{ch}")
+        chans = [{"ch": ch, "label": lb, "tpl": tpl, "p": p, "keep_v": keep}]
         mode = "each" if self.v["arb_sweep"].get().startswith("每次") else "all"
-        return {"chans": chans, "sweep_mode": mode, "nsweep": nsw,
+        return {"chans": chans, "sweep_mode": mode, "nsweep": ns,
                 "end": "keep" if self.v["arb_end"].get().startswith("維持") else "off"}
 
     def _arb_changed(self):
@@ -1241,11 +1404,12 @@ class WaveSaverUI(tk.Tk):
             a = None
             msgs.append(str(e))
         each = self.v["arb_sweep"].get().startswith("每次")
-        for ch in (1, 2, 3, 4):
-            tpl, p = self._arb_params(ch)
-            if not self.v[f"arb{ch}_en"].get() or tpl == "NONE":
+        for item in ((a or {}).get("chans") or ([{"ch": self._arb_sel_ch()}] if a is None else [])):
+            ch = item["ch"]
+            tpl, p = self._arb_params()
+            if not tpl or tpl == "NONE":
                 continue
-            lb = self.v[f"arb{ch}_lb"].get().strip() or f"CH{ch}"
+            lb = self.v["arb_lb"].get().strip() or self.ARB_CH_LABEL.get(ch, f"CH{ch}")
             try:
                 ns = T.n_sweep(tpl, p)
                 idxs = list(range(ns)) if each else [None]
@@ -1284,7 +1448,7 @@ class WaveSaverUI(tk.Tk):
         from . import n6705 as N
         if self.cap is not None and self.cap.running:
             self.cap.stop()
-        chans = [ch for ch in (1, 2, 3, 4) if self.v[f"arb{ch}_en"].get()] or [1, 2, 3, 4]
+        chans = [self._arb_sel_ch()]
         if not (self.psu and self.psu.up):
             self.log("⚠ N6705 斷線，無法送安全中止 — 請手動按 N6705 Output Off")
             return
@@ -1604,6 +1768,11 @@ class WaveSaverUI(tk.Tk):
                 self.cap.th.join(3.0)                 # 等 N6705 安全中止送完
         for ln in list(self.links.values()) + ([self.psu] if self.psu else []):
             ln.close()
+        try:
+            self._persist_sash()
+            self.ui_store.save()
+        except Exception:  # noqa: BLE001
+            pass
         self.destroy()
 
     def _draw(self):
@@ -1661,26 +1830,36 @@ def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--real", action="store_true", help="接實機（USB VISA）；預設 = 示範模式（模擬示波器）")
-    ap.add_argument("--view", default="stack", choices=("stack", "merge", "seq"), help="開在哪個分頁")
+    ap.add_argument("--view", default="stack", choices=("stack", "merge", "seq"), help="開在哪個右欄子視窗")
     ap.add_argument("--save-to", default="", help="（測試）照目前顯示存檔到此資料夾")
     ap.add_argument("--scroll", type=float, default=0.0, help="左欄捲到（0–1）")
     ap.add_argument("--shot", default="", help="截圖存檔路徑（給 review 用）")
     ap.add_argument("--shot-after", type=float, default=2.5, help="幾秒後截圖")
+    ap.add_argument("--layout", default="", help="版面 json（收合／分隔條）；「-」= 不讀不寫")
+    ap.add_argument("--fold", default="", help="（測試／截圖）強制收合的子視窗 key，逗號分隔")
+    ap.add_argument("--unfold", default="", help="（測試／截圖）強制展開的子視窗 key，逗號分隔")
     ap.add_argument("--capture", type=int, default=None, help="（測試）啟動後自動開始擷取 N 次（0 = 直到停止）")
     ap.add_argument("--arb", type=int, default=None, help="（測試）啟動後自動 ⚡ ARB＋擷取，循環 N 次")
-    ap.add_argument("--arb-tpl", default="", help="（測試）CH3 範本 RAMP / BROWNOUT / ONOFFON")
+    ap.add_argument("--arb-tpl", default="", help="（測試）共用範本 RAMP / BROWNOUT / ONOFFON")
+    ap.add_argument("--arb-ch", type=int, default=None, help="（測試）ARB 輸出通道 1/2/3/4（預設 3）")
     ap.add_argument("--unplug", default="", help="（示範測試）MODEL:秒數@幾秒後，例如 6104B:4@3")
     ap.add_argument("--folder", default="", help="存檔資料夾")
     a = ap.parse_args(argv)
-    app = WaveSaverUI(demo=not a.real)
+    # 截圖時用暫時版面檔，避免寫進使用者的 ui_layout.json
+    layout = a.layout or ("-" if a.shot else "")
+    app = WaveSaverUI(demo=not a.real, layout=layout)
     if a.folder:
         app.v["folder"].set(a.folder)
+    if a.arb_ch is not None:
+        app._pick_ch(int(a.arb_ch))
     if a.arb_tpl:
-        app._pick_tpl(3, a.arb_tpl.strip().upper())
+        app._pick_tpl(a.arb_tpl.strip().upper())
+    if a.fold or a.unfold:
+        app.after(200, lambda: app._apply_fold(a.fold, a.unfold))
     if a.view == "merge":
-        app.after(300, lambda: app.mon_nb.select(1))
+        app.after(300, lambda: app._select_mon_tab("合成"))
     if a.view == "seq":
-        app.after(300, lambda: app.mon_nb.select(2))
+        app.after(300, lambda: app._select_mon_tab("時序"))
     if a.arb is not None:
         app.after(1800, lambda: app.start_arb_capture(loops=a.arb))
     if a.capture is not None:

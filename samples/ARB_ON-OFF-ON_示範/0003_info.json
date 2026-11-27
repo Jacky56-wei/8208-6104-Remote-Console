@@ -1,6 +1,6 @@
 {
  "seq": 3,
- "time": "2026-11-27T22:31:19.099",
+ "time": "2026-11-27T23:41:20.574",
  "slave_triggered": true,
  "idn": {
   "6104B": "LECROY,HDO6104B,SIM0000,MAUI (模擬)",
@@ -62,7 +62,7 @@
    ]
   ]
  },
- "sequencing_verdict": "",
+ "sequencing_verdict": "FAIL",
  "arb": {
   "sweep_mode": "each",
   "channels": [

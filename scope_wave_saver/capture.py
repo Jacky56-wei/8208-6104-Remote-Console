@@ -450,7 +450,7 @@ class Capture:
             nvme_cols = ["NVMe 數", "NVMe 裝置", "NVMe 型號", "NVMe 序號", "NVMe 容量", "NVMe 韌體", "NVMe BDF", "NVMe Link"] \
                 if (self.cfg.get("nvme") or {}).get("on") else []
             self._sum_cols = ["序號", "觸發時間", "方向", "輔觸發", "時序判定", "順序", "檔案數", "資料夾", "備註"] + \
-                (["ARB 範本", "ARB 掃描值", "ARB 參數"] if self._arb_on() else []) + nvme_cols + rail_cols + pm_cols
+                (["ARB 通道", "ARB 範本", "ARB 掃描值", "ARB 參數"] if self._arb_on() else []) + nvme_cols + rail_cols + pm_cols
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 csv.writer(f).writerow(self._sum_cols)
             self._flush_pending()
@@ -477,7 +477,10 @@ class Capture:
         par = "；".join(f"CH{x['ch']} " + " ".join(f"{k}={x[k]}" for k in x
                                                     if k not in ("template", "template_name", "sweep", "ch", "label", "shape",
                                                                  "duration_s", "repeat", "scpi")) for x in chs)
-        return {"ARB 範本": "；".join(f"CH{x['ch']} {x['template_name']}" for x in chs),
+        chlab = "；".join(
+            (f"CH{x['ch']}" + (f" {x['label']}" if x.get("label") else "")).strip() for x in chs)
+        return {"ARB 通道": chlab,
+                "ARB 範本": "；".join(x["template_name"] for x in chs),
                 "ARB 掃描值": "；".join(f"CH{x['ch']} {x.get('sweep', '')}" for x in chs if x.get("sweep")), "ARB 參數": par}
 
     def _nvme_cols(self):
@@ -513,7 +516,7 @@ class Capture:
             nvme_cols = ["NVMe 數", "NVMe 裝置", "NVMe 型號", "NVMe 序號", "NVMe 容量", "NVMe 韌體", "NVMe BDF", "NVMe Link"] \
                 if (self.cfg.get("nvme") or {}).get("on") else []
             self._sum_cols = ["序號", "觸發時間", "方向", "輔觸發", "時序判定", "順序", "檔案數", "資料夾", "備註",
-                              "ARB 範本", "ARB 掃描值", "ARB 參數"] + nvme_cols
+                              "ARB 通道", "ARB 範本", "ARB 掃描值", "ARB 參數"] + nvme_cols
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 csv.writer(f).writerow(self._sum_cols)
         with open(path, "a", newline="", encoding="utf-8") as f:
