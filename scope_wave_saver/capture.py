@@ -32,7 +32,7 @@ from . import sequencing as SQ
 from .lecroy import parse_wavedesc
 from .link import Disconnected
 from .speccmp import SPEC_CSV
-from .rails import SLAVE_DEF
+from .rails import SLAVE_DEF, sort_rails
 
 POLL_S = 0.015
 ARM_CONFIRM_S = 5.0
@@ -386,9 +386,9 @@ class Capture:
                     p = os.path.join(folder, f"{pre}{role}_{m}.npz")
                     np.savez_compressed(p, **d)
                     files.append(p)
-        # ---- P 量測（示波器值 ＋ PC 值）
+        # ---- P 量測（示波器值 ＋ PC 值；列表：輔機在前，每台 P 編號不變）
         pm_rows = []
-        for m, ln in ((ms.model, ms), (ss.model, ss)):
+        for m, ln in ((ss.model, ss), (ms.model, ms)):
             slots = c.get("pm", {}).get(m) or []
             if not slots or (m == ss.model and not s_ok):
                 continue
@@ -441,7 +441,7 @@ class Capture:
 
     def _summary(self, seq, t_trig, s_ok, folder, sq_rows, verdict, pm_rows, nfiles, waves=None):
         path = os.path.join(self.run_dir, "summary.csv")
-        srt = sorted(sq_rows, key=lambda x: (x["model"] != SLAVE_DEF, x["ch"]))
+        srt = sort_rails(sq_rows)
         # 與 ⑦ 同一套：延遲（對參考 = Δt）、10↔90 % 時間、slew rate
         rail_cols = [f"{x['role']}{x['name']} 延遲 ms" for x in srt if x["kind"] != "current"] + \
                     [f"{x['role']}{x['name']} 10-90% ms" for x in srt] + \
@@ -457,7 +457,7 @@ class Capture:
                 csv.writer(f).writerow(self._sum_cols)
             self._flush_pending()
         d = {"序號": seq, "觸發時間": t_trig.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], "輔觸發": "Y" if s_ok else "N",
-             "方向": SQ.DIR_TXT.get(SQ.direction_of(sq_rows), ""), "時序判定": verdict, "順序": " → ".join(x["name"] for x in sq_rows if x.get("order")),
+             "方向": SQ.DIR_TXT.get(SQ.direction_of(sq_rows), ""), "時序判定": verdict, "順序": SQ.sequence_text(sq_rows),
              "檔案數": nfiles, "資料夾": os.path.basename(folder), "備註": self._gap_note}
         for x in sq_rows:
             d[f"{x['role']}{x['name']} 延遲 ms"] = "" if x.get("delay") is None else f"{x['delay'] * 1e3:.4f}"

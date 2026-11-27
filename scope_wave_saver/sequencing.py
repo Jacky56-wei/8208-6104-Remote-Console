@@ -13,7 +13,8 @@
   · 邏輯訊號（RSTn、BUSPG）：上 / 下電時間用單一高準位門檻 V（預設 0.7 × 標稱）；slew 一樣用 10 / 90 %
   · 電流（IBUS）：上電 → 峰值、峰值時間、slew = 10 → 90 % 峰值（A/ms）；下電 → 起始電流 90 → 10 %（A/ms）。不排序
   · 「上 / 下電時間」= 高門檻穿越（basis="hi"，預設；上電 = power good，下電 = 掉出 power good）或低門檻（basis="lo"）
-  · 順序 = 依上 / 下電時間排序；延遲 = 該時間 − 參考 rail（預設 VIN）的時間
+  · 「順序」編號 = 依上 / 下電時間（最早 = 1）；延遲 = 該時間 − 參考 rail（預設 VIN）的時間
+  · 表格列、時序圖（上到下）、時序 CSV：輔機訊號在前（VIN, VBUS, IBUS, BUSPG），再主機（CORE … RSTn）
   · 可選：每條 rail 的延遲下限 / 上限（ms），上電一組（min_ms / max_ms）、下電一組（dn_min_ms / dn_max_ms）→ PASS / FAIL
 """
 from __future__ import annotations
@@ -23,7 +24,7 @@ import math
 
 import numpy as np
 
-from .rails import LOGIC, MASTER_DEF, NAMES, SLAVE_DEF, UNIT_A, VNOM, kind
+from .rails import LOGIC, MASTER_DEF, NAMES, SLAVE_DEF, UNIT_A, VNOM, kind, sort_rails
 
 ROLE = {MASTER_DEF: "主", SLAVE_DEF: "輔"}
 
@@ -37,7 +38,7 @@ def default_rails():
             out.append({"model": m, "ch": i + 1, "name": nm, "kind": kind(nm), "on": True, "nom": nom,
                         "lo_pct": 10.0, "hi_pct": 90.0, "logic_v": round(0.7 * nom, 3) if nm in LOGIC else None,
                         "min_ms": None, "max_ms": None, "dn_min_ms": None, "dn_max_ms": None})
-    return out
+    return sort_rails(out)
 
 
 def _smooth(y, n=5):
@@ -104,7 +105,11 @@ def _slew(v_lo, v_hi, t_lo, t_hi):
 
 
 def analyze(waves, rails=None, ref="VIN", basis="hi", slave_skew_s=0.0, direction="auto"):
-    """waves: {(model, ch): (t, y)} → rows（照上 / 下電時間排序；沒穿越的排最後）。每列帶 direction"""
+    """waves: {(model, ch): (t, y)} → rows。
+
+    「順序」編號依上 / 下電時間；回傳列序是 VIN, VBUS, IBUS, BUSPG，再 CORE … RSTn；沒穿越的仍留在原列位。
+    每列帶 direction。
+    """
     rails = rails or default_rails()
     d = detect_direction(waves, rails) if direction in (None, "", "auto") else direction
     up = d == "up"
@@ -175,8 +180,7 @@ def analyze(waves, rails=None, ref="VIN", basis="hi", slave_skew_s=0.0, directio
     for x in rows:
         if x["t_on"] is None and x["kind"] != "current" and (x.get("min_ms") is not None or x.get("max_ms") is not None):
             x["verdict"] = "FAIL"
-    rest = [x for x in rows if x["t_on"] is None]
-    return timed + rest
+    return sort_rails(rows)
 
 
 DIR_TXT = {"up": "上電", "down": "下電"}
@@ -189,6 +193,12 @@ def direction_of(rows):
 def overall(rows):
     v = [x["verdict"] for x in rows if x.get("verdict")]
     return "" if not v else ("FAIL" if "FAIL" in v else "PASS")
+
+
+def sequence_text(rows):
+    """上 / 下電發生順序（依「順序」編號，不是列表列序）。"""
+    timed = sorted((x for x in rows if x.get("order")), key=lambda x: x["order"])
+    return " → ".join(x["name"] for x in timed)
 
 
 def _ms(v, nd=3):

@@ -30,7 +30,7 @@ from .pmeas import MATH_MAX, NONE, PARAMS, default_rows, inst_max, parse as pm_p
 
 PASS_C, FAIL_C, ERR_C = ("#1a7f37", "#dafbe1"), ("#cf222e", "#ffebe9"), ("#9a6700", "#fff8c5")
 RED = "#cf222e"
-from .rails import MASTER_DEF, NAMES, NCH, SLAVE_DEF, UNIT_A, VNOM  # noqa: E402
+from .rails import MASTER_DEF, NAMES, NCH, SLAVE_DEF, UNIT_A, VNOM, name_rank  # noqa: E402
 from . import speccmp as SC  # noqa: E402
 TITLE_M = {"8208HD": "WaveRunner 8208HD（8 CH）", "6104B": "HDO6104B（4 CH）"}
 KEY = {"8208HD": "wr8000", "6104B": "hdo6104"}
@@ -581,7 +581,7 @@ class WaveSaverUI(tk.Tk):
         ttk.Button(top, text="⤓ 讀回", style="U.Small.TButton").pack(side="left")
         nb = ttk.Notebook(f)
         nb.pack(fill="x", pady=(4, 0))
-        for m, role in ((MASTER_DEF, "主"), (SLAVE_DEF, "輔")):
+        for m, role in ((SLAVE_DEF, "輔"), (MASTER_DEF, "主")):
             t = ttk.Frame(nb, padding=4)
             nb.add(t, text=f"  {role} {m}  ")
             heads = ("存", "CH", "bus name", "標稱 V", "V/div", "Offset", "示波器上名稱")
@@ -614,7 +614,7 @@ class WaveSaverUI(tk.Tk):
                   style="U.Muted.TLabel").pack(side="left")
         nb = ttk.Notebook(f)
         nb.pack(fill="x", pady=(4, 0))
-        for m, role in ((MASTER_DEF, "主"), (SLAVE_DEF, "輔")):
+        for m, role in ((SLAVE_DEF, "輔"), (MASTER_DEF, "主")):
             t = ttk.Frame(nb, padding=4)
             nb.add(t, text=f"  {role} {m}  ")
             rows = default_rows([f"C{i + 1}" for i in range(NCH[m])])
@@ -1003,7 +1003,7 @@ class WaveSaverUI(tk.Tk):
                                          r[18] or r[19]), tags=(x.get("verdict") or "",))
         ov = SQ.overall(rows)
         d = SQ.DIR_TXT.get(SQ.direction_of(rows), "")
-        order = " → ".join(x["name"] for x in rows if x.get("order"))
+        order = SQ.sequence_text(rows)
         self.v_seq_sum.set(f"{title}{d}順序：{order}" + (f"　判定 {ov}" if ov else ""))
         SQ.draw(self.fig_seq, rows, waves, ref=self.v["seq_ref"].get(), fam=[self.fam, "Noto Sans CJK JP", "DejaVu Sans"])
         self.cv_seq.draw_idle()
@@ -2380,6 +2380,7 @@ class WaveSaverUI(tk.Tk):
         fam = [self.fam, "Noto Sans CJK JP", "DejaVu Sans"]
         if merge:
             allw = [(m, role, i, w) for m, role in roles for i, w in self.waves[m].items()]
+            allw.sort(key=lambda x: name_rank(NAMES[x[0]][x[2] - 1] if 1 <= x[2] <= len(NAMES[x[0]]) else ""))
             n = len(allw)
             for k, (m, role, i, (t, y)) in enumerate(allw):
                 ax = self.fig.add_subplot(n, 1, k + 1) if stack else (self.fig.axes[0] if self.fig.axes else self.fig.add_subplot(111))
@@ -2393,7 +2394,7 @@ class WaveSaverUI(tk.Tk):
                     ax.set_yticks([])
                 ax.axvline(0, color="#cf222e", lw=0.8)
                 ax.grid(alpha=0.3)
-            self.fig.axes[0].set_title("合一張：主 8208HD（實線）＋ 輔 6104B（虛線）· 共同時間軸（觸發 t = 0 對齊）",
+            self.fig.axes[0].set_title("合一張：輔 6104B（虛線）＋ 主 8208HD（實線）· 共同時間軸（觸發 t = 0 對齊）",
                                        fontsize=10, family=fam, color="#0E9BD8")
             self.fig.axes[-1].set_xlabel("時間 (ms)", family=fam)
             self.fig.subplots_adjust(left=0.1, right=0.98, top=0.96, bottom=0.05, hspace=0.08)
