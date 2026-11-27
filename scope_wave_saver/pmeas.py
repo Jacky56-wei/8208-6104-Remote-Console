@@ -16,7 +16,18 @@ import re
 import numpy as np
 
 NP = 24
+# 示波器上限（已核對）：
+#   WaveRunner 8000HD datasheet：「Display up to 12 measurement parameters」「up to 12 math functions traces (F1-F12)」
+#   HDO6104B datasheet（Autotest_tool DesignSpec_MD）：「Display up to 8 measurement parameters」「up to 8 math functions traces (F1-F8)」
+#   = u2core/instruments.MEAS_MAX / MATH_MAX（6104B = 8；其他 12）
 INST_MAX = {"8208HD": 12, "6104B": 8}
+MATH_MAX = {"8208HD": 12, "6104B": 8}
+# 兩台 datasheet 都列的參數（Maximum / Minimum / Mean / Peak-to-Peak / Rise / Fall / Width / Frequency / Delay / Δ Time@level；
+# V×I 用 Math Product）。Autotest_tool 已在 WR8208HD 實機確認：Rise、Fall、Max、Min、Mean、PkPk、Delay；其餘依手冊（未實機確認）
+SUPPORTED = {"8208HD": set(PARAMS_ALL := ["MAX", "MIN", "MEAN", "PKPK", "RISE", "FALL", "WID", "FREQ", "DELAY", "DTLEV",
+                                          "W_MEAN", "W_MAX", "W_MIN"]),
+             "6104B": set(PARAMS_ALL)}
+HW_VERIFIED = {"8208HD": {"MAX", "MIN", "MEAN", "PKPK", "RISE", "FALL", "DELAY"}, "6104B": set()}
 PARAMS = ["MAX", "MIN", "MEAN", "PKPK", "RISE", "FALL", "WID", "FREQ", "DELAY", "DTLEV", "W_MEAN", "W_MAX", "W_MIN"]
 ENGINE = {"MAX": "Maximum", "MIN": "Minimum", "MEAN": "Mean", "PKPK": "PeakToPeak", "RISE": "Rise", "FALL": "Fall",
           "WID": "Width", "FREQ": "Frequency", "DELAY": "Delay", "DTLEV": "DeltaTimeAtLevel",
@@ -67,8 +78,11 @@ def level_parts(row):
 
 
 def parse(rows, model="8208HD", nch=8):
-    """列 → 啟用的 P [{p, ch1, ch2, param, lv1, lv2, sl1, sl2, label, where}]"""
+    """列 → 啟用的 P [{p, ch1, ch2, param, lv1, lv2, sl1, sl2, label, where, why}]
+    where = "scope"（寫到示波器 Pn）/ "pc"（PC 用同一筆波形計算）；why = 為什麼改 PC 計算"""
     im = inst_max(model)
+    fmax = MATH_MAX.get(model, 12)
+    pairs = []
     out = []
     for i, r in enumerate(rows or [], 1):
         if i > NP or not r.get("on"):
@@ -88,10 +102,36 @@ def parse(rows, model="8208HD", nch=8):
         lv1, lv2, s1, s2 = level_parts(r) if prm in ("RISE", "FALL", "DTLEV") else (50.0, 50.0, None, None)
         lab = f"P{i} {prm} C{c1}" + (f"→C{c2} {lv1:g}/{lv2:g}%" if prm == "DTLEV" else f"×C{c2}" if prm in POWER else
                                      f" {lv1:g}-{lv2:g}%" if prm in ("RISE", "FALL") else "")
+        where, why = "scope", ""
+        if i > im:
+            where, why = "pc", f"{model} 示波器只有 P1–P{im}"
+        elif prm not in SUPPORTED.get(model, set()):
+            where, why = "pc", f"{model} 不支援 {prm}"
+        elif prm in POWER:
+            key = (c1, c2)
+            if key not in pairs:
+                if len(pairs) >= fmax:
+                    where, why = "pc", f"{model} 數學通道只有 F1–F{fmax}"
+                else:
+                    pairs.append(key)
         out.append({"p": i, "ch1": c1, "ch2": c2 if prm in ("DTLEV",) + POWER else None, "param": prm,
-                    "lv1": lv1, "lv2": lv2, "sl1": s1, "sl2": s2, "label": lab,
-                    "where": "scope" if i <= im else "pc"})
+                    "lv1": lv1, "lv2": lv2, "sl1": s1, "sl2": s2, "label": lab, "where": where, "why": why,
+                    "hw_verified": prm in HW_VERIFIED.get(model, set())})
     return out
+
+
+def warnings(slots):
+    """寫入前的提醒（不送無效指令）：改 PC 計算的列、未實機確認的參數"""
+    groups = {}
+    for sl in slots:
+        if sl["where"] == "pc" and sl.get("why"):
+            groups.setdefault(sl["why"], []).append(sl["p"])
+    w = [f"P{f'{ps[0]}–P{ps[-1]}' if len(ps) >= 3 and ps[-1] - ps[0] == len(ps) - 1 else ',P'.join(map(str, ps))}：{why} → PC 計算（不送示波器）"
+         for why, ps in groups.items()]
+    nv = sorted({sl["param"] for sl in slots if sl["where"] == "scope" and not sl.get("hw_verified")})
+    if nv:
+        w.append("未實機確認（依手冊，寫入後讀回比對）：" + "、".join(nv))
+    return w
 
 
 # ---------------------------------------------------------------- 本機計算（pmtable.local）
@@ -208,6 +248,7 @@ def math_map(slots, im):
 def setup_cmds(slots, im):
     """→ [VBS 指令]（示波器 P1–P{im}；超過上限的列不送）"""
     cmds = []
+    slots = [sl for sl in slots if sl.get("where", "scope") == "scope"]
     on = {sl["p"]: sl for sl in slots if sl["p"] <= im}
     fm = math_map(slots, im)
     for (c1, c2), fk in fm.items():
@@ -236,11 +277,15 @@ def setup_cmds(slots, im):
 
 
 def setup(write, query, slots, im, log=print):
-    for c in setup_cmds(slots, im):
+    for w_ in warnings(slots):
+        if log:
+            log("⚠ " + w_)
+    slots_sc = [sl for sl in slots if sl.get("where", "scope") == "scope"]
+    for c in setup_cmds(slots_sc, im):
         write(c)
-    bad = readback(query, slots, im) if query else []
+    bad = readback(query, slots_sc, im) if query else []
     if log:
-        n_sc = sum(1 for s in slots if s["p"] <= im)
+        n_sc = len(slots_sc)
         log(f"量測 P：示波器 {n_sc} 個（上限 P1–P{im}）、PC 計算 {len(slots) - n_sc} 個"
             + (f"；⚠ 讀回不符：{'；'.join(bad)}" if bad else "；讀回一致"))
     return bad
@@ -289,7 +334,7 @@ def read(query, slots, im):
     """→ {p: 示波器值 / None}"""
     out = {}
     for sl in slots:
-        if sl["p"] > im:
+        if sl["p"] > im or sl.get("where") == "pc":
             out[sl["p"]] = None
             continue
         try:
@@ -303,6 +348,38 @@ def read(query, slots, im):
         except Exception:  # noqa: BLE001
             out[sl["p"]] = None
     return out
+
+
+_REV = {v.upper(): k for k, v in ENGINE.items() if k not in POWER}
+
+
+def read_setup(query, model):
+    """讀回示波器 P1–P{上限} → 列 [{on, src1, src2, level, param, engine}]（pmtable.read_setup；P 上限之後補空白列）"""
+    im = inst_max(model)
+    rows = []
+    for i in range(1, im + 1):
+        try:
+            view = _vq(query, f"app.Measure.P{i}.View").lower() in ("-1", "1", "true")
+            eng = _vq(query, f"app.Measure.P{i}.ParamEngine")
+            prm = _REV.get(eng.upper())
+            s1 = _vq(query, f"app.Measure.P{i}.Source1")
+            row = {"on": bool(view and prm), "src1": s1 if re.match(r"C\d", s1) else "C1", "src2": NONE,
+                   "level": "", "param": prm or "MAX", "engine": eng}
+            if prm == "DTLEV":
+                s2 = _vq(query, f"app.Measure.P{i}.Source2")
+                row["src2"] = s2 if re.match(r"C\d", s2) else NONE
+                lv = [_NUM.search(_vq(query, f"app.Measure.P{i}.Operator.PercentLevel{n}")) for n in (1, 2)]
+                if all(lv):
+                    row["level"] = ",".join(f"{float(m.group()):g}" for m in lv)
+            if re.match(r"F\d", s1) and prm in ("MEAN", "MAX", "MIN"):
+                op = _vq(query, f"app.Math.{s1}.Operator1")
+                a, b = _vq(query, f"app.Math.{s1}.Source1"), _vq(query, f"app.Math.{s1}.Source2")
+                if op.upper() == "PRODUCT" and re.match(r"C\d", a) and re.match(r"C\d", b):
+                    row.update(on=bool(view), src1=a, src2=b, param="W_" + prm)
+            rows.append(row)
+        except Exception:  # noqa: BLE001
+            rows.append({"on": False, "src1": "C1", "src2": NONE, "level": "", "param": "MAX", "engine": "?"})
+    return rows
 
 
 def judge(local_v, inst_v, tol=TOL_PCT):

@@ -22,7 +22,7 @@ _TOOL = os.environ.get("U2_TOOL_DIR") or os.path.dirname(os.path.dirname(os.path
 if os.path.isdir(os.path.join(_TOOL, "u2core")) and _TOOL not in sys.path:
     sys.path.insert(0, _TOOL)
 
-from .pmeas import NONE, PARAMS, default_rows, inst_max  # noqa: E402
+from .pmeas import MATH_MAX, NONE, PARAMS, default_rows, inst_max, parse as pm_parse, warnings as pm_warn  # noqa: E402
 
 PASS_C, FAIL_C, ERR_C = ("#1a7f37", "#dafbe1"), ("#cf222e", "#ffebe9"), ("#9a6700", "#fff8c5")
 MASTER_DEF, SLAVE_DEF = "8208HD", "6104B"
@@ -105,6 +105,11 @@ class WaveSaverUI(tk.Tk):
         ttk.Button(bar, text="■ 停止", style="Stop.TButton", state="disabled", width=10).pack(side="left", padx=6)
         ttk.Button(bar, text="⟳ 實圖即時更新", width=13).pack(side="left", padx=(0, 6))
         ttk.Button(bar, text="📷 存目前畫面", width=13, command=lambda: self.do_save(data=False)).pack(side="left", padx=(0, 6))
+        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=4)
+        ttk.Combobox(bar, textvariable=self._sv("io_target", "兩台"), values=["兩台", "主 8208HD", "輔 6104B"],
+                     state="readonly", width=9).pack(side="left")
+        ttk.Button(bar, text="⤓ 讀回儀器設定", width=14).pack(side="left", padx=(4, 0))
+        ttk.Button(bar, text="⤒ 寫入儀器設定", width=14).pack(side="left", padx=(4, 6))
         action_row(bar, self, omit=("save", "detail", "wiring", "report"), folder=lambda: None, export=lambda: None)
         self.lb_v = tk.Label(bar, text="已同步", font=(self.fam, 15, "bold"), fg=PASS_C[0], bg=PASS_C[1], width=8)
         self.lb_v.pack(side="right")
@@ -151,19 +156,17 @@ class WaveSaverUI(tk.Tk):
             info = ttk.Frame(body.conn)
             info.pack(fill="x", padx=(22, 0))
             ttk.Label(info, text=("LECROY,WR8208HD,5003N60268 · " if m == MASTER_DEF else "LECROY,HDO6104B,5108N13350 · ")
-                      + "🕒 時鐘已對中控 PC 21:00:05（差 0 s）· Auto scale ✓ " + ("8/8" if m == MASTER_DEF else "4/4") + " CH",
-                      style="U.Muted.TLabel").pack(side="left")
+                      , style="U.Muted.TLabel").pack(side="left")
+            for txt in ("● 已連線", "🕒 已對時 21:00:05（差 0 s）",
+                        "⇕ Auto scale ✓ " + ("8/8 CH" if m == MASTER_DEF else "3/3 CH（IBUS 電流不動）")):
+                tk.Label(info, text=txt, fg=PASS_C[0], bg=PASS_C[1], font=(self.fam, 9), padx=5).pack(side="left", padx=(4, 0))
             try:
                 r.dot.set("ok")
             except Exception:  # noqa: BLE001
                 pass
-        op = ttk.Frame(body.conn)
-        op.pack(fill="x", pady=(2, 2))
-        ttk.Checkbutton(op, text="開程式自動連線", variable=self._bv("auto_conn", True)).pack(side="left")
-        ttk.Checkbutton(op, text="連線後 Auto scale", variable=self._bv("auto_scale", True)).pack(side="left", padx=8)
-        ttk.Checkbutton(op, text="連線時同步中控電腦時間", variable=self._bv("timesync", True)).pack(side="left")
-        ttk.Button(op, text="🕒 立即對時", style="U.Small.TButton").pack(side="left", padx=6)
-        ttk.Button(op, text="⇕ 立即 Auto scale", style="U.Small.TButton").pack(side="left")
+        ttk.Label(body.conn, text="開程式自動連線 → 連線後背景自動：對時（中控電腦時間）、Auto scale（依 bus name 標稱電壓）；"
+                                  "斷線自動重連，這裡只顯示結果",
+                  style="U.Muted.TLabel").pack(anchor="w", pady=(2, 2))
 
     # ---- ② 觸發（主要）
     def _trigger(self, f):
@@ -267,7 +270,7 @@ class WaveSaverUI(tk.Tk):
         ttk.Button(top, text="預設（每 CH MAX / MIN）", style="U.Small.TButton").pack(side="left")
         ttk.Button(top, text="⤒ 寫入示波器", style="U.Small.TButton").pack(side="left", padx=4)
         ttk.Button(top, text="⤓ 讀回示波器", style="U.Small.TButton").pack(side="left")
-        ttk.Label(top, text="  8208HD：示波器 P1–P12、P13–P24 PC 計算｜6104B：示波器 P1–P8、P9–P24 PC 計算",
+        ttk.Label(top, text="  上限（datasheet）8208HD：P1–P12、F1–F12｜6104B：P1–P8、F1–F8；超過 / 不支援 → PC 計算，不送示波器",
                   style="U.Muted.TLabel").pack(side="left")
         nb = ttk.Notebook(f)
         nb.pack(fill="x", pady=(4, 0))
@@ -280,8 +283,12 @@ class WaveSaverUI(tk.Tk):
                                {"on": True, "src1": "C1", "src2": "C2", "level": "90,90", "param": "DTLEV"},
                                {"on": True, "src1": "C2", "src2": "C3", "level": "90,90", "param": "DTLEV"},
                                {"on": True, "src1": "C3", "src2": "C4", "level": "90,90", "param": "DTLEV"}]
+            if m == SLAVE_DEF:
+                rows[8] = {"on": True, "src1": "C2", "src2": "C4", "level": "", "param": "W_MEAN"}
+                rows[9] = {"on": True, "src1": "C2", "src2": "C4", "level": "", "param": "W_MAX"}
             chs = [f"C{i + 1}" for i in range(NCH[m])]
             im = inst_max(m)
+            where = {sl["p"]: sl for sl in pm_parse(rows, m, NCH[m])}
             for half in (0, 1):
                 gx = half * 8
                 for j, h in enumerate(("P", "", "前 CH", "後 CH", "準位 %", "參數", "")):
@@ -300,8 +307,15 @@ class WaveSaverUI(tk.Tk):
                     ttk.Entry(t, textvariable=self._sv(f"pm_lv_{m}_{i}", r["level"]), width=7).grid(row=rr, column=gx + 4, padx=1)
                     ttk.Combobox(t, textvariable=self._sv(f"pm_p_{m}_{i}", r["param"]), values=PARAMS, width=7,
                                  state="readonly").grid(row=rr, column=gx + 5, padx=1)
-                    ttk.Label(t, text="示波器" if i < im else "PC", style="U.Muted.TLabel" if i >= im else "TLabel"
-                              ).grid(row=rr, column=gx + 6, padx=(2, 0))
+                    sl = where.get(i + 1)
+                    on_sc = (sl["where"] == "scope") if sl else i < im
+                    lb = ttk.Label(t, text="示波器" if on_sc else "PC 計算", foreground="#1a7f37" if on_sc else "#9a6700")
+                    lb.grid(row=rr, column=gx + 6, padx=(2, 0), sticky="w")
+                    if sl and sl.get("why"):
+                        self.Tip(lb, sl["why"])
+            ws = pm_warn(list(where.values()))
+            ttk.Label(t, text=("⚠ 寫入時：" + "；".join(ws)) if ws else "✓ 全部可寫入示波器", wraplength=760, justify="left",
+                      foreground="#9a6700" if ws else "#1a7f37").grid(row=13, column=0, columnspan=16, sticky="w", pady=(4, 0))
 
     # ---- ⑤ 存檔
     def _save(self, f):
