@@ -3,8 +3,8 @@
 
 版型照 All in Test tool《UI設計風格說明.md》：u2core.theme.apply、工具列 ▶/■ + action_row、狀態列、
 UnifiedBody（左：① 儀器連線 + ②③… 設定卡片；右：執行監看分頁）。
-右側主畫面 = 兩部示波器「實圖」（SCREEN_DUMP）同時看：左 = 輔（SLAVE）、右 = 主（MASTER）；可改上下排（時間格對齊）。
-「合一張」另一分頁：用讀回的波形資料在 PC 重畫（實圖無法疊成一張）。
+右側主畫面 = 兩部示波器「實圖」（SCREEN_DUMP）上下無縫接合：上 = 輔（SLAVE）、下 = 主（MASTER），時間格對齊。
+「合一張」另一分頁（只看）：用讀回的波形資料在 PC 重畫。存檔一律存上下實圖。
 
     U2_TOOL_DIR=<Autotest_tool 路徑> python -m scope_wave_saver.gui --demo
 """
@@ -104,7 +104,7 @@ class WaveSaverUI(tk.Tk):
         ttk.Button(bar, text="▶ 擷取＋存檔", style="Start.TButton", width=14, command=self.do_save).pack(side="left")
         ttk.Button(bar, text="■ 停止", style="Stop.TButton", state="disabled", width=10).pack(side="left", padx=6)
         ttk.Button(bar, text="⟳ 實圖即時更新", width=13).pack(side="left", padx=(0, 6))
-        ttk.Button(bar, text="📷 存目前畫面", width=13, command=lambda: self.do_save(data=False)).pack(side="left", padx=(0, 6))
+        ttk.Button(bar, text="📷 存上下實圖", width=13, command=lambda: self.do_save(data=False)).pack(side="left", padx=(0, 6))
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=4)
         ttk.Combobox(bar, textvariable=self._sv("io_target", "兩台"), values=["兩台", "主 8208HD", "輔 6104B"],
                      state="readonly", width=9).pack(side="left")
@@ -345,10 +345,10 @@ class WaveSaverUI(tk.Tk):
     def _monitor(self, nb):
         rf = ttk.Frame(nb, padding=2)
         nb.add(rf, text="  兩台實機畫面（實圖）  ")
+        self.v_lay = tk.StringVar(self, value="stack")       # 排列只留上下（輔 上 / 主 下，無縫）
         tb = ttk.Frame(rf)
         tb.pack(fill="x")
-        self._lay_bar(tb)
-        ttk.Label(tb, text="  更新").pack(side="left")
+        ttk.Label(tb, text="更新").pack(side="left")
         ttk.Combobox(tb, textvariable=self._sv("shot_every", "1 s"), values=["手動", "0.5 s", "1 s", "2 s", "5 s"],
                      state="readonly", width=6).pack(side="left", padx=2)
         ttk.Checkbutton(tb, text="即時更新", variable=self._bv("live", True)).pack(side="left", padx=6)
@@ -358,7 +358,7 @@ class WaveSaverUI(tk.Tk):
         hd.pack(fill="x", pady=(4, 0))
         self.lb_head = tk.Label(hd, text="", bg="#0E9BD8", fg="white", font=(self.fam, 10, "bold"))
         self.lb_head.pack(side="left")
-        for txt, cmd in (("⤢ 放大", None), ("📷 存這張（照目前顯示）", lambda: self.do_save(data=False))):
+        for txt, cmd in (("⤢ 放大", None), ("📷 存這張（上下實圖）", lambda: self.do_save(data=False))):
             tk.Button(hd, text=txt, command=cmd, bg="#FFFFFF", fg="#0E9BD8", relief="flat", font=(self.fam, 9),
                       padx=6).pack(side="right", padx=3, pady=2)
         tk.Label(hd, text="SCREEN_DUMP 21:00:12" + ("　示意圖（未連實機）" if self.demo else ""), bg="#0E9BD8", fg="white",
@@ -368,8 +368,7 @@ class WaveSaverUI(tk.Tk):
         here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
         self.shots = {}
         for m in (SLAVE_DEF, MASTER_DEF):
-            cv = tk.Label(self.shot_area, bg="#000000", bd=0, highlightthickness=0)
-            self.shots[m] = {"lab": cv, "src": os.path.join(here, f"placeholder_{m}.png"), "tk": None}
+            self.shots[m] = {"src": os.path.join(here, f"placeholder_{m}.png"), "tk": None}
         self.stack_lab = tk.Label(self.shot_area, bg="#000000", bd=0, highlightthickness=0)
         self.stack_tk = None
         self.shot_area.bind("<Configure>", lambda _e: self.after_idle(self._fit_shots))
@@ -381,10 +380,9 @@ class WaveSaverUI(tk.Tk):
         nb.add(wf, text="  合一張（PC 合成波形）  ")
         tb2 = ttk.Frame(wf)
         tb2.pack(fill="x")
-        self._lay_bar(tb2)
         self.v_view = tk.StringVar(self, value="merge")
         ttk.Checkbutton(tb2, text="每通道分開排（stack）", variable=self._bv("stack", True), command=self._draw).pack(side="left")
-        ttk.Label(tb2, text="用兩台讀回的波形資料（WAVEFORM? ALL）畫在同一時間軸，觸發 t = 0 對齊；實圖請看上一個分頁",
+        ttk.Label(tb2, text="只看：兩台讀回的波形資料（WAVEFORM? ALL）畫在同一時間軸，觸發 t = 0 對齊；存檔一律存上下實圖",
                   style="U.Muted.TLabel").pack(side="left", padx=8)
         self.fig = Figure(figsize=(11, 8.5), dpi=96, facecolor="#FFFFFF")
         self.canvas = FigureCanvasTkAgg(self.fig, wf)
@@ -404,61 +402,18 @@ class WaveSaverUI(tk.Tk):
         self.mon_nb = nb
         self._layout_shots()
 
-    def _lay_bar(self, tb):
-        """顯示方式（兩個分頁共用同一個變數）：並排 / 上下 / 合一張 —— 存檔畫面照這個設定"""
-        if not hasattr(self, "v_lay"):
-            self.v_lay = tk.StringVar(self, value="side")
-        ttk.Label(tb, text="顯示").pack(side="left")
-        for txt, val in (("並排（左 輔 ｜ 右 主）", "side"), ("上下（輔 上 / 主 下，無縫）", "stack"),
-                         ("合一張（共同時間軸）", "merge")):
-            ttk.Radiobutton(tb, text=txt, value=val, variable=self.v_lay, command=self._layout_shots).pack(side="left", padx=4)
-
     def _tab_changed(self, _e=None):
-        try:
-            i = self.mon_nb.index(self.mon_nb.select())
-        except Exception:  # noqa: BLE001
-            return
-        if i == 1 and self.v_lay.get() != "merge":
-            self.v_lay.set("merge")
-        elif i == 0 and self.v_lay.get() == "merge":
-            self.v_lay.set("side")
         self._note()
 
     def _note(self):
-        lay = self.v_lay.get()
-        txt = {"side": "照目前顯示：並排（左 輔 實圖 ｜ 右 主 實圖）→ 畫面_並排.png",
-               "stack": "照目前顯示：上下（裁到格線區、無縫接合）→ 畫面_上下.png",
-               "merge": "照目前顯示：合一張（PC 合成波形，共同時間軸）→ 畫面_合一張.png"}[lay]
-        self.v_save_note.set(txt + "；另存兩台原始實圖")
-        heads = {"side": "  左：輔 SLAVE  HDO6104B（EXT 觸發 ✓）　｜　右：主 MASTER  WaveRunner 8208HD（C1 CORE ↑ 0.42 V ✓）",
-                 "stack": "  上：輔 SLAVE  HDO6104B（EXT 觸發 ✓）　／　下：主 MASTER  WaveRunner 8208HD（C1 CORE ↑ 0.42 V ✓）",
-                 "merge": ""}
+        self.v_save_note.set("上下實圖（輔 上 / 主 下，裁到格線區、無縫接合）→ 畫面_上下.png；另存兩台原始實圖")
         if hasattr(self, "lb_head"):
-            self.lb_head.configure(text=heads[lay])
+            self.lb_head.configure(text="  上：輔 SLAVE  HDO6104B（EXT 觸發 ✓）　／　下：主 MASTER  WaveRunner 8208HD（C1 CORE ↑ 0.42 V ✓）")
 
     def _layout_shots(self):
-        lay = self.v_lay.get()
-        if lay == "merge":
-            self.mon_nb.select(1)
-            self._note()
-            return
-        if self.mon_nb.index(self.mon_nb.select()) == 1:
-            self.mon_nb.select(0)
-        for d in self.shots.values():
-            d["lab"].grid_forget()
-        self.stack_lab.grid_forget()
-        for i in range(2):
-            self.shot_area.columnconfigure(i, weight=0, uniform="")
-            self.shot_area.rowconfigure(i, weight=0, uniform="")
-        if lay == "side":
-            for k, m in enumerate((SLAVE_DEF, MASTER_DEF)):
-                self.shots[m]["lab"].grid(row=0, column=k, sticky="nsew", padx=(0, 2 if k == 0 else 0))
-                self.shot_area.columnconfigure(k, weight=1, uniform="c")
-            self.shot_area.rowconfigure(0, weight=1)
-        else:
-            self.stack_lab.grid(row=0, column=0, sticky="nsew")
-            self.shot_area.columnconfigure(0, weight=1)
-            self.shot_area.rowconfigure(0, weight=1)
+        self.stack_lab.grid(row=0, column=0, sticky="nsew")
+        self.shot_area.columnconfigure(0, weight=1)
+        self.shot_area.rowconfigure(0, weight=1)
         self._note()
         self.after(50, self._fit_shots)
 
@@ -466,25 +421,16 @@ class WaveSaverUI(tk.Tk):
         from PIL import Image, ImageTk
         from . import composite as CP
         W, H = max(self.shot_area.winfo_width(), 100), max(self.shot_area.winfo_height(), 100)
-        if self.v_lay.get() == "stack":
-            s = Image.open(self.shots[SLAVE_DEF]["src"]).convert("RGB")
-            m = Image.open(self.shots[MASTER_DEF]["src"]).convert("RGB")
-            im = CP.stack(s, m, SLAVE_DEF, MASTER_DEF, title=None, legend="", tags=("輔 SLAVE", "主 MASTER"))
-            im = im.crop((0, 34, im.width, im.height))          # 畫面上不重複標題列（共用標題列已在上方）
-            k = min(W / im.width, H / im.height)
-            im = im.resize((max(1, int(im.width * k)), max(1, int(im.height * k))), Image.LANCZOS)
-            self.stack_tk = ImageTk.PhotoImage(im)
-            self.stack_lab.configure(image=self.stack_tk)
-            return
-        for m, d in self.shots.items():
-            w, h = (W - 2) // 2, H
-            im = Image.open(d["src"])
-            k = min(w / im.width, h / im.height)
-            im = im.resize((max(1, int(im.width * k)), max(1, int(im.height * k))), Image.LANCZOS)
-            d["tk"] = ImageTk.PhotoImage(im)
-            d["lab"].configure(image=d["tk"])
+        s_ = Image.open(self.shots[SLAVE_DEF]["src"]).convert("RGB")
+        m_ = Image.open(self.shots[MASTER_DEF]["src"]).convert("RGB")
+        im = CP.stack(s_, m_, SLAVE_DEF, MASTER_DEF, legend="", tags=("輔 SLAVE", "主 MASTER"))
+        im = im.crop((0, 34, im.width, im.height))          # 畫面上不重複標題列（共用標題列已在上方）
+        k = min(W / im.width, H / im.height)
+        im = im.resize((max(1, int(im.width * k)), max(1, int(im.height * k))), Image.LANCZOS)
+        self.stack_tk = ImageTk.PhotoImage(im)
+        self.stack_lab.configure(image=self.stack_tk)
 
-    # ------------------------------------------------------------------ 存檔（畫面照目前顯示）
+    # ------------------------------------------------------------------ 存檔（畫面 = 上下無縫實圖）
     def save_dir(self):
         base = self.v["folder"].get().strip()
         if not base or not os.path.isdir(os.path.dirname(base.rstrip("\\/")) or "."):
@@ -493,9 +439,9 @@ class WaveSaverUI(tk.Tk):
         return os.path.join(base, name)
 
     def do_save(self, data=True, folder=None):
-        """畫面：照「顯示」設定存一張（並排 / 上下 / 合一張）＋ 兩台原始實圖；data=True 另存波形資料（照 ⑤ 格式；原型未接實機）"""
+        """畫面：上下無縫實圖一張 ＋ 兩台原始實圖；data=True 另存波形資料（照 ⑤ 格式；原型未接實機）"""
         from . import composite as CP
-        lay = self.v_lay.get()
+        lay = "stack"
         d = folder or self.save_dir()
         os.makedirs(d, exist_ok=True)
         sp, mp = self.shots[SLAVE_DEF]["src"], self.shots[MASTER_DEF]["src"]
@@ -504,7 +450,7 @@ class WaveSaverUI(tk.Tk):
                   + f"　｜　{self.v['tdiv'].get()} s/div  Delay {self.v['delay'].get()} s")
         trig = f"觸發：主 {self.v['trig_src'].get().split()[0]} {self.v['trig_slope'].get()} {self.v['trig_level'].get()} V → Aux Out → 輔 EXT"
         out = os.path.join(d, f"畫面_{CP.LAYOUTS[lay]}.png")
-        CP.save(out, lay, sp, mp, fig=self.fig if lay == "merge" else None, right=trig, legend=legend,
+        CP.save(out, lay, sp, mp, right=trig, legend=legend,
                 slave_model=SLAVE_DEF, master_model=MASTER_DEF)
         saved = [out]
         if self.v.get("fmt_png") is None or self.v["fmt_png"].get():
@@ -569,14 +515,14 @@ def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--demo", action="store_true", default=True)
-    ap.add_argument("--view", default="side", choices=("side", "stack", "merge"))
+    ap.add_argument("--view", default="stack", choices=("stack", "merge"), help="stack = 實圖分頁、merge = PC 合成分頁（只看）")
     ap.add_argument("--save-to", default="", help="（測試）照目前顯示存檔到此資料夾")
     ap.add_argument("--scroll", type=float, default=0.0, help="左欄捲到（0–1）")
     ap.add_argument("--shot", default="", help="截圖存檔路徑（給 review 用）")
     a = ap.parse_args(argv)
     app = WaveSaverUI(demo=a.demo)
-    if a.view != "side":
-        app.after(300, lambda: (app.v_lay.set(a.view), app._layout_shots()))
+    if a.view == "merge":
+        app.after(300, lambda: app.mon_nb.select(1))
     if a.save_to:
         app.after(2000, lambda: print("\n".join(app.do_save(data=False, folder=a.save_to))))
     if a.scroll:

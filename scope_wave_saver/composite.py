@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-"""存檔畫面「照目前顯示」：並排 / 上下 / 合一張 → 一張 PNG（PIL，不需要 Tk，可單獨測試）
+"""存檔畫面：上下無縫實圖 → 一張 PNG（PIL，不需要 Tk，可單獨測試）（使用者：「排列只留上下即可」）
 
-  side  並排：左 = 輔 SLAVE 實圖、右 = 主 MASTER 實圖（完整 SCREEN_DUMP，高度對齊），上方一條標題
   stack 上下：兩張實圖各自裁到「格線區」（grid），寬度對齊後直接上下接在一起（中間沒有間隔），
         上方一條標題、下方一條通道 / 時基說明（因為下方 descriptor 方框被裁掉）
-  merge 合一張：PC 用兩台讀回的波形在同一時間軸畫的圖（matplotlib Figure → PNG）
+  merge 合一張：PC 用兩台讀回的波形在同一時間軸畫的圖（matplotlib Figure → PNG；UI 只看，保留給程式呼叫）
 格線區：先自動偵測（整列 / 整欄幾乎都是亮點的格線外框），偵測不到用各型號比例 GRID_FRAC（未實機確認，可改）。
 """
 from __future__ import annotations
@@ -13,7 +12,7 @@ import os
 
 from PIL import Image, ImageDraw, ImageFont
 
-LAYOUTS = {"side": "並排", "stack": "上下", "merge": "合一張"}
+LAYOUTS = {"stack": "上下", "merge": "合一張"}
 # (左, 上, 右, 下) 比例；示意圖 = demo_screens 的格線位置。實機 MAUI 畫面位置待確認（自動偵測優先）
 GRID_FRAC = {"8208HD": (0.01, 0.04, 0.99, 0.80), "6104B": (0.01, 0.04, 0.99, 0.80)}
 HEAD_BG, HEAD_FG = (14, 155, 216), (255, 255, 255)
@@ -77,21 +76,6 @@ def _tag(im, text, xy=(8, 6)):
     d.text((x, y), text, fill=(120, 200, 255), font=f)
 
 
-def side(slave, master, title="", right=""):
-    """左 輔、右 主（完整畫面，高度對齊）"""
-    h = max(slave.height, master.height)
-    s = slave.resize((int(slave.width * h / slave.height), h), Image.LANCZOS)
-    m = master.resize((int(master.width * h / master.height), h), Image.LANCZOS)
-    body = Image.new("RGB", (s.width + m.width, h), (0, 0, 0))
-    body.paste(s, (0, 0))
-    body.paste(m, (s.width, 0))
-    head = _strip(body.width, title or "左：輔 SLAVE　｜　右：主 MASTER", right=right)
-    out = Image.new("RGB", (body.width, head.height + h), (0, 0, 0))
-    out.paste(head, (0, 0))
-    out.paste(body, (0, head.height))
-    return out
-
-
 def stack(slave, master, slave_model="6104B", master_model="8208HD", title="", right="", legend="", width=None,
           tags=("輔 SLAVE", "主 MASTER")):
     """上 輔、下 主：各裁到格線區、寬度一樣、中間不留縫 → 一張連續的圖"""
@@ -125,12 +109,7 @@ def compose(layout, slave_png=None, master_png=None, fig=None, **kw):
         buf.seek(0)
         return Image.open(buf).convert("RGB")
     s, m = Image.open(slave_png).convert("RGB"), Image.open(master_png).convert("RGB")
-    if layout == "stack":
-        return stack(s, m, **kw)
-    kw.pop("legend", None)
-    kw.pop("slave_model", None)
-    kw.pop("master_model", None)
-    return side(s, m, **kw)
+    return stack(s, m, **kw)
 
 
 def save(path, layout, slave_png=None, master_png=None, fig=None, **kw):
