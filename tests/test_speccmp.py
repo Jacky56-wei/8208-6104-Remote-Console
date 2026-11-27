@@ -82,3 +82,26 @@ class LayoutMigrateTest(unittest.TestCase):
             self.assertEqual(saved["version"], LAYOUT_VERSION)
         finally:
             os.remove(path)
+
+
+class NvmeLineTest(unittest.TestCase):
+    def test_fmt_link_and_one_line(self):
+        from scope_wave_saver import nvmehost as NH
+        self.assertEqual(NH.fmt_link("32GT/s x4"), "Gen5 x4")
+        self.assertEqual(NH.fmt_link("16 GT/s x4"), "Gen4 x4")
+        self.assertEqual(NH.fmt_link("8GT/s Width x8"), "Gen3 x8")
+        d = NH.SIM_DRIVES[0]
+        self.assertEqual(
+            NH.drive_line(d),
+            "nvme0n1 ｜ DEMO SSD 3840GB ｜ SIM-NVME-0001 ｜ 3.84 TB ｜ 1.00 ｜ Gen5 x4 ｜ PASS",
+        )
+        text, tip, vd = NH.homepage_line(NH.SIM_DRIVES)
+        self.assertEqual(vd, "PASS")
+        self.assertIn("nvme0n1", text)
+        text, _t, vd = NH.homepage_line([])
+        self.assertEqual((text, vd), ("NVMe：未認到碟", "FAIL"))
+        two = NH.SIM_DRIVES + [{**d, "dev": "/dev/nvme1n1", "serial": "SIM-2"}]
+        text, tip, vd = NH.homepage_line(two)
+        self.assertTrue(text.startswith("2 顆"))
+        self.assertIn("nvme1n1", tip)
+        self.assertEqual(vd, "PASS")

@@ -169,6 +169,7 @@ class WaveSaverUI(tk.Tk):
         self._conn(body)
         self._fold_conn(body)
         self._dut_bar(body)
+        self._nvme_line_build(body)
         page = body.page
         page.columnconfigure(0, weight=1)
         page.rowconfigure(0, weight=1)
@@ -1587,6 +1588,45 @@ class WaveSaverUI(tk.Tk):
                         activebackground=col if sel else "#eaeef2",
                         activeforeground="#ffffff" if sel else "#1f2328")
 
+    def _nvme_line_build(self, body):
+        """主頁一行碟機資訊：① 下方、僅在啟用 NVMe rescan 時顯示。"""
+        host = getattr(body, "left_extra", None) or body.left
+        self.nvme_line = ttk.Frame(host, padding=(10, 3, 10, 3))
+        ttk.Label(self.nvme_line, text="NVMe", style="U.Sec.TLabel").pack(side="left", padx=(0, 8))
+        self.v_nvme_line = tk.StringVar(self, value="尚未 rescan")
+        self.lb_nvme_line = tk.Label(self.nvme_line, textvariable=self.v_nvme_line,
+                                     font=(self.fam, 10, "bold"), fg="#24292f", bg="#FFFFFF",
+                                     anchor="w", padx=6, pady=2)
+        self.lb_nvme_line.pack(side="left", fill="x", expand=True)
+        self._nvme_line_tip = "啟用 Linux NVMe rescan 後，擷取或按 ↻ 會更新這一列"
+        if getattr(self, "Tip", None):
+            self.Tip(self.lb_nvme_line, lambda: self._nvme_line_tip or self.v_nvme_line.get())
+        # 預設關閉，不 pack
+
+    def _nvme_line_visible(self, on):
+        bar = getattr(self, "nvme_line", None)
+        if bar is None:
+            return
+        if on:
+            if not bar.winfo_ismapped():
+                bar.pack(fill="x")
+        else:
+            bar.pack_forget()
+
+    def _nvme_line_set(self, drives=None, error=None, pending=False):
+        if not hasattr(self, "v_nvme_line"):
+            return
+        from . import nvmehost as NH
+        if pending:
+            text, tip, vd = "尚未 rescan", "擷取或按 ↻ 立刻 rescan 後會列出碟機", ""
+        else:
+            text, tip, vd = NH.homepage_line(drives, error)
+        self.v_nvme_line.set(text)
+        self._nvme_line_tip = tip or text
+        fg, bg = {"PASS": ("#1a7f37", "#dafbe1"), "FAIL": ("#cf222e", "#ffebe9")}.get(
+            vd, ("#24292f", "#FFFFFF"))
+        self.lb_nvme_line.configure(fg=fg, bg=bg)
+
     def _nvme_block(self, f):
         """Linux NVMe rescan：預設關閉；沒勾就不佔空間、不連線、不 import paramiko。"""
         row = ttk.Frame(f)
@@ -1624,9 +1664,14 @@ class WaveSaverUI(tk.Tk):
         if on:
             self.nvme_box.pack(fill="x", pady=(4, 0))
             self._nvme_ensure_tab()
+            self._nvme_line_visible(True)
+            self._nvme_line_set(pending=True)
+            if self.demo:
+                self.after(50, self._nvme_now)
         else:
             self.nvme_box.pack_forget()
             self._nvme_drop_tab()
+            self._nvme_line_visible(False)
 
     def _nvme_ensure_tab(self):
         if self.nvme_tab is not None:
@@ -1670,8 +1715,12 @@ class WaveSaverUI(tk.Tk):
             tv.delete(*tv.get_children())
             for d in rows:
                 tv.insert("", "end", values=tuple(d.get(k, "") or "—" for k in NH.COLS))
-        if isinstance(drives, dict) and drives.get("error"):
-            self.log(f"⚠ NVMe：{drives['error']}")
+        err = drives.get("error") if isinstance(drives, dict) else None
+        if err:
+            self.log(f"⚠ NVMe：{err}")
+            self._nvme_line_set(error=err)
+        else:
+            self._nvme_line_set(drives=rows)
 
     def _nvme_now(self):
         if not self.v["nvme_on"].get():
@@ -2234,6 +2283,7 @@ def main(argv=None):
     ap.add_argument("--folder", default="", help="存檔資料夾")
     ap.add_argument("--form", default="", help="（測試／截圖）DUT 規格 U2 / M2")
     ap.add_argument("--profile", default="", help="（測試／截圖）電源設計表名稱")
+    ap.add_argument("--nvme", action="store_true", help="（測試／截圖）啟用 Linux NVMe rescan 並立刻認碟")
     a = ap.parse_args(argv)
     # 截圖時用暫時版面檔，避免寫進使用者的 ui_layout.json
     layout = a.layout or ("-" if a.shot else "")
@@ -2253,6 +2303,12 @@ def main(argv=None):
         app._want_form = key
     if a.profile:
         app._want_profile = a.profile.strip()
+    if a.nvme:
+        def _en_nvme():
+            if "nvme_on" in app.v:
+                app.v["nvme_on"].set(True)
+                app._nvme_toggle()
+        app.after(200, _en_nvme)
     if a.fold or a.unfold:
         app.after(200, lambda: app._apply_fold(a.fold, a.unfold))
     if a.view == "merge":

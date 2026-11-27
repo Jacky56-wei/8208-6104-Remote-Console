@@ -22,6 +22,7 @@
 | `screenshots/ui_folded.png` | 子視窗收合示範：左欄部分卡片（③④⑥）收合只留 ▸ 標題；右欄實圖與紀錄同時展開、中間可拉分隔條；時序 / 合成波形收合 |
 | `screenshots/ui_spec_U2.png` | 最上方選 **U.2／U.3（VIN 12 V）**＋機種 `U2_12V_PowerIC_DesignSpec`、總判定；⑨／右欄是實測 vs 設計範圍表（設計值，非正式規格；公開輸入 12V ±8% 另列）；N6705 CH3 標稱為 12 V |
 | `screenshots/ui_spec_M2.png` | 最上方選 **M.2（VIN 3.3 V）** 自動換 `M2_3V3_PowerIC_DesignSpec`，內部 rail 電壓跟著設計表變；N6705 CH3 標稱改成 3.3 V |
+| `screenshots/ui_nvme_line.png` | 啟用 Linux NVMe rescan 後，主頁 ① 下方一行碟機資訊：`nvme0n1 ｜ 型號 ｜ SN ｜ 容量 ｜ FW ｜ Gen5 x4 ｜ PASS`；完整表仍在可收合的 NVMe 認碟卡 |
 
 ## 畫面存檔
 
@@ -86,7 +87,7 @@
 - N6705 也在 ① 儀器連線：背景自動連線 ＋ USB 自動重連（同示波器的 Link）；連線後只做 `*CLS` 與對時（`u2core.timesync`），**不動輸出**
 - 示範：模擬 N6705（`SimN6705`）的 VIN 輸出帶動模擬 DUT（VIN ≥ 9.6 V 依序上電、< 9.0 V 依序下電），主觸發看 **C8 RSTn** 是否過門檻；
   `--arb 1 --arb-tpl BROWNOUT` 自動跑一次。範例輸出：`samples/ARB_Brownout_示範/`（-10 %、-20 % RSTn 沒跳 → 未觸發，-50 % 觸發）、`samples/ARB_ON-OFF-ON_示範/`
-- **Linux NVMe rescan（選用，預設關閉）**：⑧ 最下方勾選才展開（主機 / 帳號／密碼、認碟表）；沒勾不佔空間、不連線、**不 import paramiko**。啟用後 ARB 每次擷取會 PCIe rescan，用 `nvme list -o json`（沒有則 sysfs + lsblk）列出 `/dev/nvmeXn1`、型號、序號、容量、韌體、PCIe BDF、Link，寫紀錄與 `summary.csv`。示範模式為模擬資料。
+- **Linux NVMe rescan（選用，預設關閉）**：⑧ 最下方勾選才展開（主機 / 帳號／密碼、認碟表）；沒勾不佔空間、不連線、**不 import paramiko**。啟用後主頁 ① 下方出現**一行**碟機資訊（`nvme0n1 ｜ 型號 ｜ SN ｜ 容量 ｜ FW ｜ Gen4 x4 ｜ PASS`；多顆顯示顆數＋第一顆，其餘在 tooltip）。每次擷取或 ↻ rescan 會更新；完整 Treeview 仍在可收合的 NVMe 認碟卡。用 `nvme list -o json`（沒有則 sysfs + lsblk）列出裝置，寫紀錄與 `summary.csv`。示範模式為模擬資料。`--nvme` 可在示範裡立刻啟用。
 
 
 ## DUT 規格（最上方固定列）＋ ⑨ 設計規格判比表

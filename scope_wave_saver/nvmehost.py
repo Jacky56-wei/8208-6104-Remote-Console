@@ -221,7 +221,8 @@ def rescan(host, wait_s=2.0):
     rc, out, err = host.run(RESCAN_CMD, timeout=20)
     if not isinstance(host, SimHost) and rc not in (0, None):
         raise NvmeError(f"PCIe rescan 失敗 rc={rc}：{(err or out).strip()[:200]}")
-    time.sleep(max(float(wait_s or 0), 0.0))
+    if not isinstance(host, SimHost):
+        time.sleep(max(float(wait_s or 0), 0.0))
     return rc, (out or "").strip(), (err or "").strip()
 
 
@@ -282,6 +283,75 @@ def rescan_and_list(host, wait_s=2.0):
 COLS = ("dev", "model", "serial", "capacity", "fw", "bdf", "link")
 COL_ZH = {"dev": "裝置", "model": "型號", "serial": "序號", "capacity": "容量",
           "fw": "韌體", "bdf": "PCIe BDF", "link": "Link"}
+
+# PCIe 速率 → Generation（CEM）；對不到就原樣。
+_LINK_GEN = ((32.0, 5), (16.0, 4), (8.0, 3), (5.0, 2), (2.5, 1))
+LINE_SEP = " ｜ "
+
+
+def fmt_link(s):
+    """'32GT/s x4' / '16 GT/s Width x4' → 'Gen5 x4'／'Gen4 x4'；認不得就原樣。"""
+    t = str(s or "").strip()
+    if not t:
+        return ""
+    m = re.search(r"([\d.]+)\s*GT/?s", t, re.I)
+    w = re.search(r"x\s*(\d+)", t, re.I)
+    if not m:
+        return t
+    gt = float(m.group(1))
+    gen = next((g for thresh, g in _LINK_GEN if abs(gt - thresh) < 0.4), None)
+    width = f" x{w.group(1)}" if w else ""
+    return f"Gen{gen}{width}" if gen else t
+
+
+def fmt_cap_short(d):
+    """主頁一行用短容量：3.84 TB；沒有 capacity_b 就從『（3.84 TB）』括號取。"""
+    b = d.get("capacity_b") if isinstance(d, dict) else None
+    try:
+        b = int(b) if b not in (None, "") else None
+    except (TypeError, ValueError):
+        b = None
+    if b and b > 0:
+        if b >= 1e12:
+            return f"{b / 1e12:.2f} TB"
+        if b >= 1e9:
+            return f"{b / 1e9:.2f} GB"
+        if b >= 1e6:
+            return f"{b / 1e6:.0f} MB"
+        return f"{b} B"
+    cap = str((d or {}).get("capacity") or "")
+    m = re.search(r"（([^）]+)）", cap) or re.search(r"\(([^)]+)\)", cap)
+    return m.group(1) if m else cap
+
+
+def drive_line(d, verdict="PASS"):
+    """單一顆：nvme0n1 ｜ Model ｜ SN ｜ 3.84 TB ｜ FW ｜ Gen4 x4 ｜ PASS"""
+    dev = str((d or {}).get("dev") or "").replace("/dev/", "").strip() or "—"
+    parts = [dev,
+             str((d or {}).get("model") or "").strip() or "—",
+             str((d or {}).get("serial") or "").strip() or "—",
+             fmt_cap_short(d or {}) or "—",
+             str((d or {}).get("fw") or "").strip() or "—",
+             fmt_link((d or {}).get("link") or "") or "—"]
+    if verdict:
+        parts.append(verdict)
+    return LINE_SEP.join(parts)
+
+
+def homepage_line(drives, error=None):
+    """主頁一行＋tooltip＋判定。多顆：前綴顆數＋第一顆，其餘放 tooltip。"""
+    if error:
+        return f"NVMe：失敗（{error}）", str(error), "FAIL"
+    rows = [d for d in (drives or []) if isinstance(d, dict)]
+    if not rows:
+        return "NVMe：未認到碟", "", "FAIL"
+    first = drive_line(rows[0], "PASS")
+    if len(rows) == 1:
+        return first, first, "PASS"
+    shown = f"{len(rows)} 顆  {first}"
+    tip = "\n".join(drive_line(d, "PASS") for d in rows)
+    return shown, tip, "PASS"
+
 
 
 def rows_for_csv(drives):
