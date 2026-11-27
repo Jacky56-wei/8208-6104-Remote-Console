@@ -3,8 +3,8 @@
 主 **WaveRunner 8208HD（MASTER，8 CH）** ＋ 輔 **HDO6104B（SLAVE，4 CH）**：
 觸發設定、bus name、P1–P24 量測、Auto scale、對時、Aux Out → EXT 主從觸發，兩台**實圖（SCREEN_DUMP）**同時看，波形存到中控電腦。
 
-> **目前狀態：預設 = 示範模式（模擬示波器，`SimScope`）**，整個流程（連線 → 背景設定 → arm → 觸發 → 讀 → 存 → 上 / 下電時序 → 斷線重連）
-> 都用模擬示波器跑過；畫面上的示波器圖是 **PLACEHOLDER 示意圖**。`--real` 接實機（USB VISA），**尚未實機測試**。
+> **目前狀態：預設 = 示範模式（模擬示波器 `SimScope` ＋ 模擬 N6705 `SimN6705`）**，整個流程（連線 → 背景設定 → arm → N6705 ARB → 觸發 → 讀 → 存 → 上 / 下電時序 → 斷線重連）
+> 都用模擬儀器跑過；畫面上的示波器圖是 **PLACEHOLDER 示意圖**。`--real` 接實機（USB VISA），**尚未實機測試**。
 
 ## 畫面
 
@@ -15,6 +15,8 @@
 | `screenshots/ui_review_settings_scrolled.png` | 左欄捲到下方：P1–P24、存檔 |
 | `screenshots/ui_capture_paused.png` | 連續擷取中拔掉 6104B USB（示範）：6104B 紅燈、「USB 中斷 — 背景重連中」、擷取 **暫停** |
 | `screenshots/ui_seq_powerup.png` / `ui_seq_powerdown.png` | 「上 / 下電時序」分頁：表格（順序、上 / 下電時間、10↔90 % 時間、slew rate、延遲、PASS / FAIL）＋ 時序圖 |
+| `screenshots/ui_arb_RAMP.png` / `ui_arb_BROWNOUT.png` / `ui_arb_ONOFFON.png` | ⑧ N6705 ARB：三種範本的參數欄位 ＋ **即時預覽**（掃描值疊圖：實線 = 第一個、虛線 = 其他） |
+| `screenshots/ui_arb_seq_onoffon.png` | ARB ON-OFF-ON 擷取後的「上 / 下電時序」分頁 |
 | `screenshots/ui_settings_capture_seq.png` | 左欄 ⑥ 連續擷取（N 次、進度）、⑦ 上電時序設定（每條 rail 門檻、上 / 下電延遲限制） |
 
 ## 畫面存檔
@@ -56,6 +58,28 @@
 - 閒置時每 3 s 心跳（`*OPC?`；即時更新開著就用 SCREEN_DUMP）→ 沒在擷取也會發現被拔
 - 連續擷取中斷線 → **暫停**，重連後 **重做這一次**（不跳號），空檔寫紀錄與 summary 備註；所有事件寫紀錄分頁 ＋ log 檔
 - 示範：① 每台有「模擬拔 USB 5 s（示範）」按鈕；或 `--unplug 6104B:4@3`（3 s 後拔 6104B 4 s）
+
+## ⑧ N6705 ARB 啟動＋擷取（`arbtpl.py`、`n6705.py`）
+
+不用編點，三種**參數式範本**（每個 N6705 通道各選一個；預設 CH3 = VIN 12V，同 All in Test tool「DUT 12V 預設 CH3」）：
+
+| 範本 | 參數 | 下載成 |
+|---|---|---|
+| **Ramp** | 起始 V、結束 V、延遲、上升時間、停留、下降時間、結束停留、重複 | N6705 原生 Trapezoid（`ARB:FUNC:SHAP TRAP`） |
+| **Brownout margin** | 標稱 V、**掉到**（V 或 % margin，可掃描 `-5%/-10%/-20%`）、掉落時間、下降 / 回升時間、前段停留、間隔、重複 | 單一準位 = Trapezoid（同 `arbmodule.from_powercut`）；「全部放在同一個 ARB」= 各段串成 User Defined（`arbmodule.merge`） |
+| **Instant ON-OFF-ON** | ON 準位、先 ON 停留、**OFF 時間**（可掃描 `1ms/2ms/5ms`）、再 ON 停留、重複 | User Defined 3 點（ON → 0 V → ON，結束停在最後值） |
+
+- 數值可帶單位（`2ms`、`100u`、`12 V`；`arbmodule.parse_num`）；每個掃描值都先用 `arbmodule.validate` 檢查（N6705 點數 / dwell / 電壓上限），有錯在卡片紅字顯示、不會下載
+- **即時預覽**：改任何參數 0.25 s 後重畫（掃描值疊圖），下面一行顯示形狀、點數、長度
+- 掃描：**每次擷取換下一個值**（預設；序號 1 → 第 1 個值…）或全部放在同一個 ARB；**循環 N 次** → 總擷取次數 = N × 掃描值數（0 = 直到 ■ 停止）
+- 每次流程：輔 arm → 主 arm → 下載 ARB（`ABOR:TRAN` → 形狀 / 參數 → `ARB:COUN` → `ARB:TERM:LAST ON` → `TRIG:ARB:SOUR BUS` → `SYST:ERR?` / `*OPC?`）
+  → `OUTP ON` → `INIT:TRAN (@ch…)` → **一個 `*TRG` 所有通道同時開始** → 等主觸發（逾時 = ARB 長度 + 1 s）→ 讀 / 存
+- **ARB 跑完主沒觸發**（例 Brownout -10 % 沒掉到 UVLO、CORE 沒動）→ summary 記一列「未觸發」＋ 掃描值，換下一個值（= margin 結果：哪個準位開始 reset）
+- info.json 加 `arb`（每通道範本、參數、這次的掃描值、形狀、長度、送出的 SCPI）；summary.csv 加「ARB 範本 / ARB 掃描值 / ARB 參數」
+- **安全中止**：■ 停止、擷取錯誤、關視窗 → `ABOR:TRAN` → `OUTP OFF`（或選「維持最後電壓」）；卡片 **⛔ N6705 安全中止** 隨時可按
+- N6705 也在 ① 儀器連線：背景自動連線 ＋ USB 自動重連（同示波器的 Link）；連線後只做 `*CLS` 與對時（`u2core.timesync`），**不動輸出**
+- 示範：模擬 N6705（`SimN6705`）的 VIN 輸出帶動模擬 DUT（VIN ≥ 9.6 V 依序上電、< 9.0 V 依序下電），兩台示波器的波形由 ARB 算出；
+  `--arb 1 --arb-tpl BROWNOUT` 自動跑一次。範例輸出：`samples/ARB_Brownout_示範/`（-10 %、-20 % 未觸發，-50 % 觸發）、`samples/ARB_ON-OFF-ON_示範/`
 
 ## 版面
 

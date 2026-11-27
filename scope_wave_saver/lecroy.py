@@ -260,6 +260,17 @@ class SimBus:
         self.scopes = {}
         self.down_until = {}
         self.n_trig = 0
+        self.arb = None                             # N6705 模擬 ARB：{"fire_at": 牆鐘, "waves": {model: {ch: (t, y)}}}
+        self.cur = None                             # 這次觸發的 ARB 波形（read_raw_wave 用）
+
+    def arb_start(self, tp, vp):
+        """模擬 N6705 *TRG：依 ARB 輸出（VIN）算出兩台示波器的波形；主 CORE 過 50 % 的那一刻 = 觸發"""
+        waves, t_trig = sim_arb_waves(tp, vp, rng=self.rng)
+        self.arb = {"fire_at": None if t_trig is None else time.time() + max(t_trig, 0.0), "waves": waves}
+        return t_trig
+
+    def arb_abort(self):
+        self.arb = None
 
     def unplug(self, model, seconds):
         self.down_until[model] = time.time() + float(seconds)
@@ -270,6 +281,12 @@ class SimBus:
     def fire(self):
         """主觸發的那一刻：產生這次的上電波形（兩台共用時間軸）＋ 有 arm 的輔一起觸發"""
         self.n_trig += 1
+        if self.arb is not None:                    # ARB 帶動（N6705）：用 ARB 算出的波形
+            self.dir, self.cur, self.arb = "arb", self.arb["waves"], None
+            for sc in self.scopes.values():
+                if sc.mode == "SINGLE":
+                    sc.mode, sc.inr, sc.jit, sc.t_trig = "STOP", 1, {}, time.time()
+            return
         self.dir = self.direction if self.direction in ("up", "down") else ("up" if self.n_trig % 2 else "down")
         jit = {nm: float(self.rng.normal(0, 0.03e-3)) for m in ("8208HD", "6104B") for nm in _sim_names(m)}
         for sc in self.scopes.values():
@@ -329,6 +346,83 @@ def _sim_down(model, jit, t0, t1, n, rng):
     return out
 
 
+VIN_ON, VIN_OFF = 9.6, 9.0          # 模擬 DUT：VIN UVLO（上升 9.6 V 開、掉到 9.0 V 關）
+
+
+def _movavg(y, n):
+    n = max(int(n), 1)
+    if n <= 1:
+        return y
+    k = np.ones(n) / n
+    pad = np.concatenate([np.full(n - 1, y[0]), y])
+    return np.convolve(pad, k, mode="valid")
+
+
+def sim_arb_waves(tp, vp, rng=None, t0=-2e-3, t1=8e-3, n=10000):
+    """模擬 DUT 被 N6705 ARB（接 VIN）帶動：
+    VIN ≥ 9.6 V → 各 rail 依上電順序延遲 a_i 開；VIN < 9.0 V → 依下電順序延遲 b_i 關（RSTn / BUSPG 先掉、CORE 最後）。
+    Brownout 沒掉到 UVLO → rail 不動、只有 VIN / VBUS 掉；ON-OFF-ON → 先下電再上電。
+    觸發 t = 0 = 主 C1 CORE 第一次過 50 %（上升或下降）；CORE 沒動 → t_trig = None（不觸發）。回傳 ({model: {ch: (t, y)}}, t_trig)"""
+    from .rails import NAMES, VNOM
+    rng = rng or np.random.default_rng()
+    tp, vp = np.asarray(tp, float), np.asarray(vp, float)
+    T = float(tp[-1]) if len(tp) else 0.0
+    g_t = np.arange(0.0, T + 2e-6, 2e-6)
+    g_v = np.interp(g_t, tp, vp)
+    st = bool(g_v[0] >= VIN_ON)
+    edges, cur = [], st
+    hi, lo = g_v >= VIN_ON, g_v < VIN_OFF
+    idx = np.flatnonzero(hi | lo)
+    for i in idx:
+        if not cur and hi[i]:
+            cur = True
+            edges.append((float(g_t[i]), True))
+        elif cur and lo[i]:
+            cur = False
+            edges.append((float(g_t[i]), False))
+    a = {nm: 0.3e-3 + i * 0.45e-3 for i, nm in enumerate(NAMES["8208HD"])}
+    b = {nm: 0.05e-3 + (7 - i) * 0.22e-3 for i, nm in enumerate(NAMES["8208HD"])}
+    a["BUSPG"], b["BUSPG"] = 0.9e-3, 0.02e-3
+    tau = 0.3e-3
+    if edges:
+        te, up = edges[0]
+        t_trig = te + (a if up else b)["CORE"] + tau / 2
+    else:
+        ch = np.flatnonzero(np.abs(g_v - g_v[0]) > 0.02 * max(float(np.max(np.abs(g_v))), 1e-3))
+        t_trig = None                                    # CORE 沒動 → 主不會觸發（Brownout 沒掉到 UVLO）
+    tz = (float(g_t[ch[0]]) if len(ch) else 0.0) if t_trig is None else t_trig
+    t = np.linspace(t0, t1, n)
+    ta = t + tz                                          # ARB 時間軸
+    dt = float(t[1] - t[0])
+
+    def state(nm):
+        e = np.full(n, st, dtype=float)
+        tog, last = [], -1.0
+        for te, up in edges:                             # 照 VIN 事件順序；還沒關完就回來 → 關完才再開
+            tt = max(te + (a[nm] if up else b[nm]), last + 0.05e-3)
+            tog.append((tt, up))
+            last = tt
+        for tt, on in tog:
+            e[ta >= tt] = 1.0 if on else 0.0
+        return e
+
+    out = {"8208HD": {}, "6104B": {}}
+    for i, nm in enumerate(NAMES["8208HD"]):
+        v = VNOM.get(nm, 1.0)
+        e = state(nm)
+        y = v * (e if nm == "RSTn" else _movavg(e, tau / dt))
+        out["8208HD"][i + 1] = (t, y)
+    vin = np.interp(ta, tp, vp)
+    vbus = 0.99 * np.interp(ta - 0.25e-3, tp, vp)
+    out["6104B"][1] = (t, vin)
+    out["6104B"][2] = (t, vbus)
+    out["6104B"][3] = (t, VNOM["BUSPG"] * state("BUSPG"))
+    dv = np.gradient(vbus, dt)
+    ibus = np.clip(5e-5 * dv, 0, 3.0) + 0.15 * _movavg(state("CORE"), tau / dt)
+    out["6104B"][4] = (t, ibus)
+    return out, t_trig
+
+
 class SimScope(LeCroyScope):
     """模擬示波器（沒有硬體時測試用）：SINGLE / INR? / TRIG_MODE? / WAVEFORM? / SCREEN_DUMP（示意圖）"""
     sim = True
@@ -359,7 +453,13 @@ class SimScope(LeCroyScope):
         self.inst = None
 
     def _tick(self):
-        if self.model == "8208HD" and self.mode == "SINGLE" and self.t_arm and time.time() >= self.t_arm:
+        if self.model != "8208HD" or self.mode != "SINGLE":
+            return
+        a = self.bus.arb
+        if a is not None:                                 # N6705 ARB 已啟動：只在 CORE 過門檻那一刻觸發（沒過 → 不觸發）
+            if a["fire_at"] is not None and time.time() >= a["fire_at"]:
+                self.bus.fire()
+        elif self.t_arm and time.time() >= self.t_arm:
             self.bus.fire()
 
     def w(self, cmd):
@@ -407,6 +507,12 @@ class SimScope(LeCroyScope):
         self._chk()
         k = int(re.sub(r"\D", "", trace) or 1)
         rng = np.random.default_rng(self.bus.n_trig * 100 + k)
+        if self.bus.dir == "arb" and self.bus.cur:
+            t, y = self.bus.cur[self.model][k]
+            v = max(float(np.max(np.abs(y))), 0.05)
+            y = y + 0.004 * v * rng.standard_normal(len(y))
+            return encode_wavedesc(y, float(t[1] - t[0]), float(t[0]), "A" if (self.model, k) == ("6104B", 4) else "V",
+                                   k - 1, self.model)
         t, y = sim_waves(self.model, self.jit, rng=rng, direction=self.bus.dir)[k]
         return encode_wavedesc(y, float(t[1] - t[0]), float(t[0]), "A" if (self.model, k) == ("6104B", 4) else "V",
                                k - 1, self.model)

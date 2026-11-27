@@ -56,6 +56,7 @@ class WaveSaverUI(tk.Tk):
         self.master_model = tk.StringVar(self, value=MASTER_DEF)
         self.bus = None
         self.links = {}
+        self.psu = None                           # N6705 Link（ARB）
         self._build()
         self._make_links()
         self.after(100, self._pump)
@@ -101,6 +102,8 @@ class WaveSaverUI(tk.Tk):
         self.btn_go.pack(side="left")
         self.btn_stop = ttk.Button(bar, text="■ 停止", style="Stop.TButton", state="disabled", width=10, command=self.stop_capture)
         self.btn_stop.pack(side="left", padx=6)
+        self.btn_arb = ttk.Button(bar, text="⚡ ARB＋擷取", width=12, command=self.start_arb_capture)
+        self.btn_arb.pack(side="left", padx=(0, 6))
         ttk.Button(bar, text="⟳ 實圖即時更新", width=13).pack(side="left", padx=(0, 6))
         ttk.Button(bar, text="📷 存上下實圖", width=13, command=lambda: self.do_save(data=False)).pack(side="left", padx=(0, 6))
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=4)
@@ -145,6 +148,7 @@ class WaveSaverUI(tk.Tk):
         self._save(body.card("存檔（中控電腦）", 3, 0, num=5))
         self._capture_card(body.card("連續擷取（觸發次數）", 4, 0, num=6))
         self._seq_card(body.card("上電時序（PC 計算）", 5, 0, num=7))
+        self._arb_card(body.card("N6705 ARB 啟動＋擷取（Ramp / Brownout margin / Instant ON-OFF-ON）", 6, 0, num=8))
         self._monitor(body.right_nb)
 
     # ---- ① 儀器連線（自動連線；對時 / Auto scale 背景做，只寫紀錄，失敗才顯示）
@@ -171,6 +175,27 @@ class WaveSaverUI(tk.Tk):
             if self.demo:
                 ttk.Button(info, text="模擬拔 USB 5 s（示範）", style="U.Small.TButton",
                            command=lambda m=m: self.sim_unplug(m, 5.0)).pack(side="right")
+        # N6705（ARB 電源）：同樣背景自動連線 ＋ USB 自動重連；連線後只做對時 / *CLS，不動輸出
+        from .n6705 import DEF_ADDR
+        m = "N6705"
+        st = self.st_var[m] = tk.StringVar(self, value="連線中… · ARB 電源")
+        r = InstRow(body.conn, "wavesaver", "n6705", "Keysight N6705（ARB 電源）", addr_var=self._sv("addr_N6705", DEF_ADDR),
+                    connect=lambda: None, connected=lambda: bool(self.psu and self.psu.up), status_var=st,
+                    app_btn_text=True, btn_text="中斷")
+        self.rows[m] = r
+        try:
+            _orig = r.dot.set
+            r.dot.set = lambda c, _o=_orig: _o(RED if (self.psu and self.psu.state == "down") else c)
+        except Exception:  # noqa: BLE001
+            pass
+        info = ttk.Frame(body.conn)
+        info.pack(fill="x", padx=(22, 0))
+        self.idn_var[m] = tk.StringVar(self, value="")
+        ttk.Label(info, textvariable=self.idn_var[m], style="U.Muted.TLabel").pack(side="left")
+        self.bg_warn[m] = tk.Label(info, text="", fg=FAIL_C[0], bg=FAIL_C[1], font=(self.fam, 9), padx=5)
+        if self.demo:
+            ttk.Button(info, text="模擬拔 USB 5 s（示範）", style="U.Small.TButton",
+                       command=lambda: self.sim_unplug("N6705", 5.0)).pack(side="right")
 
     def bg_result(self, model, task, ok, msg=""):
         """背景工作（對時 / Auto scale）結果：成功 → 只寫紀錄；失敗 → 紀錄 ＋ ① 該台下方紅字"""
@@ -659,7 +684,27 @@ class WaveSaverUI(tk.Tk):
             self.links[m] = Link(m, fac, log=self.log, on_state=lambda *a: self.q_ui.put(("link",) + a),
                                  on_setup=self._bg_setup)
             self.links[m].start()
+        from .n6705 import N6705, SimN6705
+        addr = self.v["addr_N6705"].get()
+        fac = (lambda: SimN6705(addr, bus=self.bus)) if self.demo else (lambda: N6705(addr, log=self.log))
+        self.psu = Link("N6705", fac, log=self.log, on_state=lambda *a: self.q_ui.put(("link",) + a),
+                        on_setup=self._psu_setup, name="N6705")
+        self.psu.start()
         self.after(1500, self._live_tick)
+
+    def _psu_setup(self, dev, first):
+        """N6705 連線 / 重連後：*CLS → 對時（u2core.timesync）。不動輸出 / ARB（安全）"""
+        from .link import is_link_error
+        tag = "" if first else "（重連後）"
+        try:
+            dev.w("*CLS")
+            from u2core import timesync
+            msg = timesync.sync(dev.q, dev.w, dev.idn)
+            self._bg("N6705", "對時（中控電腦時間）" + tag, "失敗" not in msg and "未當成成功" not in msg, msg)
+        except Exception as e:  # noqa: BLE001
+            if is_link_error(e):
+                raise
+            self._bg("N6705", "對時（中控電腦時間）" + tag, False, f"{type(e).__name__}: {e}")
 
     def _snap(self):
         """背景執行緒會用到的 UI 值（主執行緒更新）"""
@@ -725,6 +770,8 @@ class WaveSaverUI(tk.Tk):
             step("Auto scale", scale)
 
     def _on_link(self, m, state, detail):
+        if m == "N6705":
+            return self._on_psu_link(state, detail)
         role = "MASTER 主" if m == self.master_model.get() else "SLAVE 輔"
         lb = self.bg_warn.get(m)
         if state == "up":
@@ -747,6 +794,25 @@ class WaveSaverUI(tk.Tk):
             ups = [k for k, ln in self.links.items() if ln.up]
             self.v_status.set("兩台已連線，待命" if len(ups) == 2 else
                               "、".join(f"{k} {'已連線' if self.links[k].up else '斷線 / 連線中'}" for k in self.links))
+
+    def _on_psu_link(self, state, detail):
+        m, lb = "N6705", self.bg_warn.get("N6705")
+        if state == "up":
+            self.st_var[m].set("已連線 · ARB 電源")
+            self.idn_var[m].set(detail)
+            if lb is not None and lb.cget("text").startswith("⚠ USB"):
+                lb.pack_forget()
+        elif state == "connecting":
+            self.st_var[m].set(f"{detail}… · ARB 電源")
+        else:
+            self.st_var[m].set("⚠ 斷線 · ARB 電源")
+            if lb is not None:
+                lb.configure(text=f"⚠ USB 中斷 — 背景重連中（{detail[:60]}）")
+                lb.pack(side="left", padx=(8, 0))
+        try:
+            self.rows[m].dot.set("#999999" if state != "up" else PASS_C[0])
+        except Exception:  # noqa: BLE001
+            pass
 
     def sim_unplug(self, m, sec):
         if self.bus is not None:
@@ -776,6 +842,205 @@ class WaveSaverUI(tk.Tk):
         except queue.Empty:
             pass
         self.after(100, self._pump)
+
+    # ---- ⑧ N6705 ARB（參數式範本，不用編點）
+    ARB_CH_DEF = {1: ("", False), 2: ("", False), 3: ("VIN 12V", True), 4: ("", False)}   # Autotest_tool：DUT 12 V 預設 CH3
+
+    def _arb_card(self, f):
+        from . import arbtpl as T
+        self._T = T
+        nb = ttk.Notebook(f)
+        nb.pack(fill="x")
+        self.arb_par = {}
+        for ch in (1, 2, 3, 4):
+            lb, en = self.ARB_CH_DEF[ch]
+            pg = ttk.Frame(nb, padding=(6, 6, 6, 4))
+            nb.add(pg, text=f" CH{ch} ")
+            top = ttk.Frame(pg)
+            top.pack(fill="x")
+            ttk.Checkbutton(top, text="使用", variable=self._bv(f"arb{ch}_en", en),
+                            command=self._arb_changed).pack(side="left")
+            ttk.Label(top, text="　標籤").pack(side="left")
+            ttk.Entry(top, textvariable=self._sv(f"arb{ch}_lb", lb or f"CH{ch}"), width=10).pack(side="left", padx=(4, 10))
+            tv = self._sv(f"arb{ch}_tpl", "RAMP" if en else "NONE")
+            for key, name in T.TEMPLATES:
+                ttk.Radiobutton(top, text=name, value=key, variable=tv, style="Toolbutton",
+                                command=lambda ch=ch: (self._arb_fields(ch), self._arb_changed())).pack(side="left", padx=1)
+            par = ttk.Frame(pg)
+            par.pack(fill="x", pady=(6, 0))
+            self.arb_par[ch] = par
+            for key, *_r in T.TEMPLATES:                    # 每個範本各自一組參數（切換範本不會弄丟）
+                for k, _lbl, d, _u, _sw in T.FIELDS.get(key, []):
+                    v = self._sv(f"arb{ch}_{key}_{k}", d)
+                    v.trace_add("write", lambda *_: self._arb_changed())
+            self._arb_fields(ch)
+        nb.select(2)
+        self.arb_nb = nb
+        r = ttk.Frame(f)
+        r.pack(fill="x", pady=(6, 0))
+        ttk.Label(r, text="掃描").pack(side="left")
+        ttk.Combobox(r, textvariable=self._sv("arb_sweep", "每次擷取換下一個值"), values=["每次擷取換下一個值", "全部放在同一個 ARB"],
+                     state="readonly", width=17).pack(side="left", padx=4)
+        ttk.Label(r, text="循環").pack(side="left", padx=(8, 0))
+        ttk.Spinbox(r, textvariable=self._sv("arb_loops", "1"), from_=0, to=10000, width=5,
+                    command=self._arb_changed).pack(side="left", padx=4)
+        ttk.Label(r, text="次（0 = 直到 ■ 停止）").pack(side="left")
+        ttk.Label(r, text="　結束 / 停止 →").pack(side="left")
+        ttk.Combobox(r, textvariable=self._sv("arb_end", "輸出 OFF"), values=["輸出 OFF", "維持最後電壓"], state="readonly",
+                     width=11).pack(side="left", padx=4)
+        self.v["arb_sweep"].trace_add("write", lambda *_: self._arb_changed())
+        self.v["arb_loops"].trace_add("write", lambda *_: self._arb_changed())
+        r2 = ttk.Frame(f)
+        r2.pack(fill="x", pady=(6, 0))
+        ttk.Button(r2, text="⚡ ARB 啟動＋擷取", style="Start.TButton", width=16,
+                   command=self.start_arb_capture).pack(side="left")
+        ttk.Button(r2, text="⛔ N6705 安全中止", style="Stop.TButton", width=16,
+                   command=self.psu_abort).pack(side="left", padx=6)
+        self.v_arb_sum = tk.StringVar(self, value="")
+        ttk.Label(r2, textvariable=self.v_arb_sum, font=(self.fam, 10, "bold"), foreground="#0958d9").pack(side="left", padx=6)
+        self.v_arb_msg = tk.StringVar(self, value="")
+        ttk.Label(f, textvariable=self.v_arb_msg, foreground="#cf222e", wraplength=780, justify="left").pack(anchor="w")
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        from matplotlib.figure import Figure
+        self.fig_arb = Figure(figsize=(8.2, 2.3), dpi=96, facecolor="#FFFFFF")
+        self.cv_arb = FigureCanvasTkAgg(self.fig_arb, f)
+        self.cv_arb.get_tk_widget().pack(fill="x", pady=(4, 0))
+        ttk.Label(f, text="流程：輔 arm → 主 arm → 下載 ARB（ABOR:TRAN → 形狀 / 參數 → ARB:COUN → TRIG:ARB:SOUR BUS → SYST:ERR?）→ "
+                          "OUTP ON → INIT:TRAN → *TRG（所有通道同時）→ 等主觸發 → 讀 / 存。ARB 跑完主沒觸發（例 Brownout 沒掉到 reset）"
+                          "→ summary 記「未觸發」、換下一個值。數值可帶單位（2ms、100u）；掃描用 / 分隔（-5%/-10%、1ms/2ms/5ms）。"
+                          "範本 + 參數 + 這次的掃描值存進 info.json / summary.csv。",
+                  style="U.Muted.TLabel", wraplength=780, justify="left").pack(anchor="w", pady=(4, 0))
+        self._arb_job = None
+        self.after(400, self._arb_preview)
+
+    def _arb_fields(self, ch):
+        T = self._T
+        par = self.arb_par[ch]
+        for w in par.winfo_children():
+            w.destroy()
+        tpl = self.v[f"arb{ch}_tpl"].get()
+        flds = T.FIELDS.get(tpl, [])
+        if not flds:
+            ttk.Label(par, text="這個通道不跑 ARB（輸出不動）", style="U.Muted.TLabel").grid(row=0, column=0, sticky="w")
+            return
+        for i, (k, lbl, _d, u, sw) in enumerate(flds):
+            r, c = divmod(i, 4)
+            ttk.Label(par, text=lbl + ("　⇄掃描" if sw else "")).grid(row=r * 2, column=c, sticky="w", padx=(0, 10))
+            e = ttk.Entry(par, textvariable=self.v[f"arb{ch}_{tpl}_{k}"], width=16 if sw else 9)
+            e.grid(row=r * 2 + 1, column=c, sticky="w", padx=(0, 10), pady=(0, 4))
+        for c in range(4):
+            par.columnconfigure(c, weight=1)
+
+    def _arb_params(self, ch):
+        tpl = self.v[f"arb{ch}_tpl"].get()
+        return tpl, {k: self.v[f"arb{ch}_{tpl}_{k}"].get() for k, *_r in self._T.FIELDS.get(tpl, [])}
+
+    def _arb_cfg(self):
+        """UI → Capture cfg["arb"]（驗證每個掃描值；有錯 → ValueError）"""
+        from u2core import arbmodule as AM
+        T = self._T
+        chans, nsw = [], 1
+        for ch in (1, 2, 3, 4):
+            tpl, p = self._arb_params(ch)
+            if not self.v[f"arb{ch}_en"].get() or tpl == "NONE":
+                continue
+            ns = T.n_sweep(tpl, p)
+            nsw = max(nsw, ns)
+            keep = None
+            for idx in range(ns):
+                try:
+                    c = T.build(tpl, p, ch=ch, idx=idx)
+                except Exception as e:  # noqa: BLE001
+                    raise ValueError(f"CH{ch} 參數：{e}") from e
+                err, _w = AM.validate(c)
+                if err:
+                    raise ValueError(f"CH{ch} {T.TPL_NAME[tpl]}：" + "；".join(err[:3]))
+                keep = float(c.dc_value)
+            chans.append({"ch": ch, "label": self.v[f"arb{ch}_lb"].get().strip(), "tpl": tpl, "p": p, "keep_v": keep})
+        mode = "each" if self.v["arb_sweep"].get().startswith("每次") else "all"
+        return {"chans": chans, "sweep_mode": mode, "nsweep": nsw,
+                "end": "keep" if self.v["arb_end"].get().startswith("維持") else "off"}
+
+    def _arb_changed(self):
+        if getattr(self, "_arb_job", None):
+            try:
+                self.after_cancel(self._arb_job)
+            except Exception:  # noqa: BLE001
+                pass
+        self._arb_job = self.after(250, self._arb_preview)
+
+    def _arb_preview(self):
+        """即時預覽：每個啟用通道的 ARB 輸出（掃描值疊在一起；目前這組 = 實線）"""
+        self._arb_job = None
+        from u2core import arbmodule as AM
+        T = self._T
+        fig = self.fig_arb
+        fig.clear()
+        ax = fig.add_subplot(111)
+        fam = [self.fam, "Noto Sans CJK JP", "DejaVu Sans"]
+        cols = {1: "#F2C744", 2: "#3BB273", 3: "#0E9BD8", 4: "#E0457B"}
+        msgs, sums = [], []
+        try:
+            a = self._arb_cfg()
+        except ValueError as e:
+            a = None
+            msgs.append(str(e))
+        each = self.v["arb_sweep"].get().startswith("每次")
+        for ch in (1, 2, 3, 4):
+            tpl, p = self._arb_params(ch)
+            if not self.v[f"arb{ch}_en"].get() or tpl == "NONE":
+                continue
+            lb = self.v[f"arb{ch}_lb"].get().strip() or f"CH{ch}"
+            try:
+                ns = T.n_sweep(tpl, p)
+                idxs = list(range(ns)) if each else [None]
+                for j, idx in enumerate(idxs):
+                    c = T.build(tpl, p, ch=ch, idx=idx)
+                    tt, vv = T.preview(c)
+                    sw = T.sweep_label(tpl, p, idx) if idx is not None and ns > 1 else ""
+                    ax.plot([x * 1e3 for x in tt], vv, lw=1.6 if j == 0 else 1.0, alpha=1.0 if j == 0 else 0.55,
+                            ls="-" if j == 0 else "--", color=cols[ch], label=f"CH{ch} {lb}" + (f"  {sw.split(' ')[-1]}" if sw else ""))
+                c0 = T.build(tpl, p, ch=ch, idx=0 if each else None)
+                pts = len(AM.to_udef(c0)) if c0.shape == "UDEF" else None
+                sums.append(f"CH{ch} {T.TPL_NAME[tpl].split('（')[0]} · {AM.SHAPE_NAME.get(c0.shape, c0.shape)}"
+                            + (f" {pts} 點" if pts else "") + f" · {AM.duration(c0) * 1e3:.1f} ms"
+                            + (f" × {c0.repeat}" if c0.repeat > 1 else "") + (f" · 掃描 {ns} 值" if ns > 1 else ""))
+            except Exception as e:  # noqa: BLE001
+                msgs.append(f"CH{ch}：{e}")
+        ax.set_xlabel("時間 (ms)　t = 0 → *TRG", family=fam, fontsize=8)
+        ax.set_ylabel("V", fontsize=8)
+        ax.grid(alpha=0.3)
+        ax.tick_params(labelsize=7)
+        if ax.lines:
+            ax.legend(fontsize=7, loc="best", prop={"family": fam, "size": 7})
+        fig.subplots_adjust(left=0.07, right=0.99, top=0.95, bottom=0.2)
+        self.cv_arb.draw_idle()
+        if a is not None:
+            try:
+                n = int(float(self.v["arb_loops"].get() or 0))
+            except ValueError:
+                n = 1
+            tot = "直到 ■ 停止" if n <= 0 else f"{n * (a['nsweep'] if a['sweep_mode'] == 'each' else 1)} 次擷取"
+            self.v_arb_sum.set(f"→ {tot}")
+        self.v_arb_msg.set("　".join(sums) + (("\n✗ " + "；".join(msgs)) if msgs else ""))
+
+    def psu_abort(self):
+        """⛔ N6705 安全中止：停止擷取 → ABOR:TRAN → OUTP OFF（所有啟用的 ARB 通道）"""
+        from . import n6705 as N
+        if self.cap is not None and self.cap.running:
+            self.cap.stop()
+        chans = [ch for ch in (1, 2, 3, 4) if self.v[f"arb{ch}_en"].get()] or [1, 2, 3, 4]
+        if not (self.psu and self.psu.up):
+            self.log("⚠ N6705 斷線，無法送安全中止 — 請手動按 N6705 Output Off")
+            return
+
+        def job():
+            try:
+                self.psu.call(lambda d: N.abort(d, chans, output_off=True))
+                self.log(f"⛔ N6705 安全中止：ABOR:TRAN → OUTP OFF（CH {chans}）")
+            except Exception as e:  # noqa: BLE001
+                self.log(f"✗ N6705 安全中止失敗：{e} — 請手動按 N6705 Output Off")
+        threading.Thread(target=job, daemon=True).start()
 
     # ------------------------------------------------------------------ 連續擷取
     def _pm_rows(self, m):
@@ -819,20 +1084,45 @@ class WaveSaverUI(tk.Tk):
                     rails=self._rails_from_ui(), seq_on=self.v["seq_save"].get(), legend=self._legend(),
                     trig_text=self._trig_text(), **o)
 
-    def start_capture(self, count=None):
+    def start_arb_capture(self, loops=None):
+        """⚡ ARB＋擷取：兩台 arm → N6705 下載 / 啟動 ARB → 等觸發 → 讀 / 存（循環 N 次 × 掃描值）"""
+        try:
+            arb = self._arb_cfg()
+        except ValueError as e:
+            self.v_arb_msg.set(f"✗ {e}")
+            self.log(f"✗ ARB 設定有誤：{e}")
+            return
+        if not arb["chans"]:
+            self.v_arb_msg.set("✗ 沒有啟用的 N6705 通道（勾「使用」並選範本）")
+            return
+        if not (self.psu and self.psu.up):
+            self.v_arb_msg.set("✗ N6705 還沒連線（背景重連中）")
+            self.log("✗ ⚡ ARB＋擷取：N6705 還沒連線")
+            return
+        try:
+            n = int(float(self.v["arb_loops"].get())) if loops is None else int(loops)
+        except ValueError:
+            n = 1
+        tot = 0 if n <= 0 else n * (arb["nsweep"] if arb["sweep_mode"] == "each" else 1)
+        self.start_capture(count=tot, arb=arb)
+
+    def start_capture(self, count=None, arb=None):
         from .capture import Capture
         if self.cap is not None and self.cap.running:
             return
         cfg = self._capture_cfg(count)
+        if arb:
+            cfg["arb"] = arb
         m = self.master_model.get()
         s = SLAVE_DEF if m == MASTER_DEF else MASTER_DEF
         self.cap = Capture({"master": self.links[m], "slave": self.links[s]}, cfg, log=self.log,
-                           emit=lambda k, d: self.q_ui.put(("cap", k, d)))
+                           emit=lambda k, d: self.q_ui.put(("cap", k, d)), psu=self.psu if arb else None)
         n = cfg["count"]
         self.pb.configure(mode="determinate" if n > 0 else "indeterminate", maximum=max(n, 1), value=0)
         if n <= 0:
             self.pb.start(80)
         self.btn_go.configure(state="disabled")
+        self.btn_arb.configure(state="disabled")
         self.btn_stop.configure(state="normal")
         self._cap_last = "—"
         self.saved_txt.delete("1.0", "end")
@@ -843,7 +1133,7 @@ class WaveSaverUI(tk.Tk):
             self.cap.stop()
             self.log("■ 停止（等這一次結束）")
 
-    STATE_TXT = {"arming": "arm 中（輔 → 主）", "waiting": "已 arm，等觸發", "reading": "讀取 / 存檔中", "paused": "⏸ 暫停"}
+    STATE_TXT = {"arb": "N6705 ARB 啟動", "arming": "arm 中（輔 → 主）", "waiting": "已 arm，等觸發", "reading": "讀取 / 存檔中", "paused": "⏸ 暫停"}
 
     def _prog_text(self, n, N, state="", msg=""):
         cnt = f"{n} / {N}" if N > 0 else f"{n} 次（直到停止）"
@@ -858,6 +1148,12 @@ class WaveSaverUI(tk.Tk):
             self.lb_v.configure(text="暫停" if d.get("state") == "paused" else "擷取中",
                                 fg=(ERR_C if d.get("state") == "paused" else PASS_C)[0],
                                 bg=(ERR_C if d.get("state") == "paused" else PASS_C)[1])
+        elif kind == "captured" and d.get("missed"):
+            if N > 0:
+                self.pb.configure(value=d["seq"])
+            self.v_prog.set(self._prog_text(d["seq"], N, "未觸發"))
+            self.saved_txt.insert("end", f"#{d['seq']}  未觸發（{d.get('arb', '')}）：{d.get('msg', '')}\n")
+            self.saved_txt.see("end")
         elif kind == "captured":
             self._cap_last = d["time"]
             if N > 0:
@@ -888,6 +1184,7 @@ class WaveSaverUI(tk.Tk):
         elif kind in ("finished", "error"):
             self.pb.stop()
             self.btn_go.configure(state="normal")
+            self.btn_arb.configure(state="normal")
             self.btn_stop.configure(state="disabled")
             self.lb_v.configure(text="已同步", fg=PASS_C[0], bg=PASS_C[1])
             if kind == "finished":
@@ -1020,7 +1317,9 @@ class WaveSaverUI(tk.Tk):
     def _quit(self):
         if self.cap is not None:
             self.cap.stop()
-        for ln in self.links.values():
+            if self.cap.running and self.cap.cfg.get("arb"):
+                self.cap.th.join(3.0)                 # 等 N6705 安全中止送完
+        for ln in list(self.links.values()) + ([self.psu] if self.psu else []):
             ln.close()
         self.destroy()
 
@@ -1083,16 +1382,24 @@ def main(argv=None):
     ap.add_argument("--shot", default="", help="截圖存檔路徑（給 review 用）")
     ap.add_argument("--shot-after", type=float, default=2.5, help="幾秒後截圖")
     ap.add_argument("--capture", type=int, default=None, help="（測試）啟動後自動開始擷取 N 次（0 = 直到停止）")
+    ap.add_argument("--arb", type=int, default=None, help="（測試）啟動後自動 ⚡ ARB＋擷取，循環 N 次")
+    ap.add_argument("--arb-tpl", default="", help="（測試）CH3 範本 RAMP / BROWNOUT / ONOFFON")
     ap.add_argument("--unplug", default="", help="（示範測試）MODEL:秒數@幾秒後，例如 6104B:4@3")
     ap.add_argument("--folder", default="", help="存檔資料夾")
     a = ap.parse_args(argv)
     app = WaveSaverUI(demo=not a.real)
     if a.folder:
         app.v["folder"].set(a.folder)
+    if a.arb_tpl:
+        app.v["arb3_tpl"].set(a.arb_tpl)
+        app._arb_fields(3)
+        app._arb_changed()
     if a.view == "merge":
         app.after(300, lambda: app.mon_nb.select(1))
     if a.view == "seq":
         app.after(300, lambda: app.mon_nb.select(2))
+    if a.arb is not None:
+        app.after(1800, lambda: app.start_arb_capture(loops=a.arb))
     if a.capture is not None:
         app.after(1500, lambda: app.start_capture(count=a.capture))
     if a.unplug:
