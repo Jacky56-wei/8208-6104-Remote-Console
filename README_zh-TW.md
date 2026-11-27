@@ -1,4 +1,4 @@
-# 8208-6104 Remote Console — 雙示波器波形工具（UI 原型，待 review）
+# 8208-6104 Remote Console — 雙示波器波形工具（UI 原型）
 
 主 **WaveRunner 8208HD（MASTER，8 CH）** ＋ 輔 **HDO6104B（SLAVE，4 CH）**：
 觸發設定、bus name、P1–P24 量測、Auto scale、對時、Aux Out → EXT 主從觸發，兩台**實圖（SCREEN_DUMP）**同時看，波形存到中控電腦。
@@ -26,10 +26,10 @@
 
 ## 版面
 
-- **工具列**：▶ 擷取＋存檔、■ 停止、⟳ 實圖即時更新、📷 存兩台畫面、結果資料夾 / 匯出；右邊主 / 輔觸發狀態
-- **工具列 ⤓ 讀回儀器設定 / ⤒ 寫入儀器設定**（兩台 / 主 / 輔）：觸發（來源 / 準位 / 斜率 / 模式）、時基（T/div、Delay）、通道（開關、V/div、Offset、bus name）、P1–P24、Aux Out / EXT 同步（`settings.py`；寫入前先檢查，不支援的不送）
+- **工具列**：▶ 擷取＋存檔、■ 停止、⟳ 實圖即時更新、📷 存上下實圖、結果資料夾 / 匯出；右邊主 / 輔觸發狀態
+- **工具列 ⤓ 讀回儀器設定 / ⤒ 寫入儀器設定**（兩台 / 主 / 輔）：觸發（來源 / 準位 / 斜率 / 模式）、時基（T/div、Delay）、通道（開關、V/div、Offset、bus name）、P1–P24；主 / 輔同步用固定值一併寫入（主 AUX OUT = Trigger Out、輔 EX10 / 0.5 V / ↑；不碰 10 MHz Ref In/Out）（`settings.py`；寫入前先檢查，不支援的不送）
 - **① 儀器連線**：只顯示連線狀態。開程式自動連線；對時（中控電腦時間）與 Auto scale 在背景自動做，只寫紀錄（紀錄分頁 ＋ `桌面\scope waveform\scope_wave_saver.log`），**失敗才**在該台下方顯示紅字
-- **② 觸發設定（主要）**：MASTER 選 8208HD / 6104B；觸發通道（C1 CORE … C8 RSTn）、準位 V、斜率 ↑ Rising / ↓ Falling / ↕ Either、模式、T/div、Delay；
+- **② 觸發設定（MASTER 觸發通道 / 準位 / 斜率）**：MASTER 選 8208HD / 6104B；觸發通道（C1 CORE … C8 RSTn）、準位 V、斜率 ↑ Rising / ↓ Falling / ↕ Either、模式、T/div、Delay；
   主 / 輔同步（接線：主 8208HD AUX OUT ──BNC── 輔 6104B EXT）：主 AUX OUT = Trigger Out、輔 EX10、0.5 V、↑，連線後背景自動設，輔時基跟主一樣（不用 10 MHz Ref In/Out）；UI 不顯示，失敗才顯示
 - **③ 通道 ＋ bus name**：主 C1–C8 = CORE、DDRVPP、GPIO、DDRIO、PHYIO、NFIO、NFCORE、RSTn；輔 C1–C4 = VIN、VBUS、BUSPG、IBUS（電流 A）
 - **④ 量測 P1–P24（每台）**：每列標「示波器」或「PC 計算」，寫入前列出會改 PC 計算的列
@@ -46,16 +46,39 @@
 超過 P 上限、數學通道用完、或型號不支援的參數 → **不送示波器**，改 PC 用同一筆波形計算，寫入前在 UI 與紀錄提醒（`pmeas.parse / warnings`）。
 - **⑤ 存檔**：預設 `桌面\scope waveform\<前綴>_<日期時間>\`；PNG 實圖、.trc、CSV、NPZ、P 量測 CSV、info.json
 
-## 執行（需要 All in Test tool 的 `u2core`，版型與元件共用）
+## 執行（Windows）
+
+需要：Python 3.10–3.13（64 位元）、NI-VISA 或 Keysight IO Libraries，以及 All in Test tool（Autotest_tool）的 `u2core`（版型與元件共用，不放在本 repo）。
+套件見 `requirements.txt`：numpy、matplotlib、pillow、pyvisa、pyvisa-py。
+
+**最簡單：雙擊 `run.bat`**（第一次會建 `.venv` 並裝套件；`U2_TOOL_DIR` 預設 `D:\0.Project\Github_project\Autotest_tool`，可先 `set` 覆寫）。
+
+手動：
 
 ```bat
-REM Windows：把 scope_wave_saver\ 放在 Autotest_tool 根目錄旁（或設 U2_TOOL_DIR）
+git clone https://github.com/Jacky56-wei/8208-6104-Remote-Console.git
+cd 8208-6104-Remote-Console
+py -3 -m pip install -r requirements.txt
 set U2_TOOL_DIR=D:\0.Project\Github_project\Autotest_tool
-py -3 -m scope_wave_saver.gui        REM --view merge = 開在合一張分頁；--save-to <資料夾> 測試存檔
+py -3 -m scope_wave_saver.gui        REM 或 py -3 -m scope_wave_saver / py -3 run_gui.py
 ```
 
-需要：Python 3.10+、numpy、matplotlib、pillow（之後接實機另需 pyvisa ＋ NI-VISA / Keysight IO）。
-重產示意圖：`py -3 -m scope_wave_saver.demo_screens`。
+參數：`--view merge` 開在合一張分頁；`--save-to <資料夾>` 測試存檔。重產示意圖：`py -3 -m scope_wave_saver.demo_screens`。
+
+## 打包成 exe（Windows）
+
+**雙擊 `build.bat`** → `dist\ScopeWaveSaver\ScopeWaveSaver.exe`（目標電腦不需 Python，但仍需 NI-VISA / Keysight IO）。
+
+手動：
+
+```bat
+set U2_TOOL_DIR=D:\0.Project\Github_project\Autotest_tool
+py -3 -m pip install -r requirements.txt pyinstaller
+py -3 -m PyInstaller --noconfirm --clean ScopeWaveSaver.spec
+```
+
+`ScopeWaveSaver.spec`：入口 `run_gui.py`；從 `U2_TOOL_DIR` 把用到的 `u2core` 模組收進 exe（exe 執行時不需要 Autotest_tool）、
+`scope_wave_saver\assets` 一併打包；PySide6 / scipy 等 Autotest_tool 才用的大套件排除。`dist\`、`build\`、`.venv\` 不進 git。
 
 ## 參考（All in Test tool 的做法）
 

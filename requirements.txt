@@ -1,0 +1,6 @@
+# ScopeWaveSaver（scope_wave_saver/）＋ 用到的 Autotest_tool u2core 模組
+numpy>=1.24
+matplotlib>=3.7
+pillow>=9.0
+pyvisa>=1.13       # 需 NI-VISA 或 Keysight IO Libraries（USB-TMC 連 LeCroy）
+pyvisa-py>=0.7     # 找不到 NI-VISA 時改用 "@py" 後端（同 u2core/visapool）
