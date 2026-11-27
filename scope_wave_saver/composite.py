@@ -99,7 +99,7 @@ def stack(slave, master, slave_model="6104B", master_model="8208HD", title="", r
 
 
 def compose(layout, slave_png=None, master_png=None, fig=None, **kw):
-    """→ PIL Image。layout = side / stack / merge（merge 要 fig = matplotlib Figure）"""
+    """→ PIL Image。layout = stack / merge（merge 要 fig = matplotlib Figure）"""
     if layout == "merge":
         if fig is None:
             raise ValueError("合一張需要 PC 合成波形圖（Figure）")
