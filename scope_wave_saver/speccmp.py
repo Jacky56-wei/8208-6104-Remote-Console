@@ -669,7 +669,7 @@ def compare_measurements(meas, seq_rows=None, timing_limits=None):
     # IBUS 不在設計表 → 仍列出待填
     if not any(canon(r["ch"]) == "IBUS" for r in rails):
         rails.append({"ch": "IBUS", "nom": None, "min": None, "max": None, "tol_pct": None, "unit": "A"})
-    # 列表列序：輔機訊號在前（VIN, VBUS, BUSPG, IBUS），再主機（CORE … RSTn）
+    # 列表列序：輔機訊號在前（VIN, VBUS, IBUS, BUSPG），再主機（CORE … RSTn）
     from .rails import name_rank
     rails.sort(key=lambda r: name_rank(r.get("ch") or ""))
     for r in rails:

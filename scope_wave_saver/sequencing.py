@@ -14,7 +14,7 @@
   · 電流（IBUS）：上電 → 峰值、峰值時間、slew = 10 → 90 % 峰值（A/ms）；下電 → 起始電流 90 → 10 %（A/ms）。不排序
   · 「上 / 下電時間」= 高門檻穿越（basis="hi"，預設；上電 = power good，下電 = 掉出 power good）或低門檻（basis="lo"）
   · 「順序」編號 = 依上 / 下電時間（最早 = 1）；延遲 = 該時間 − 參考 rail（預設 VIN）的時間
-  · 表格列、時序圖（上到下）、時序 CSV：輔機訊號在前（VIN, VBUS, BUSPG, IBUS），再主機（CORE … RSTn）；同一台依 CH
+  · 表格列、時序圖（上到下）、時序 CSV：輔機訊號在前（VIN, VBUS, IBUS, BUSPG），再主機（CORE … RSTn）
   · 可選：每條 rail 的延遲下限 / 上限（ms），上電一組（min_ms / max_ms）、下電一組（dn_min_ms / dn_max_ms）→ PASS / FAIL
 """
 from __future__ import annotations
@@ -38,7 +38,7 @@ def default_rails():
             out.append({"model": m, "ch": i + 1, "name": nm, "kind": kind(nm), "on": True, "nom": nom,
                         "lo_pct": 10.0, "hi_pct": 90.0, "logic_v": round(0.7 * nom, 3) if nm in LOGIC else None,
                         "min_ms": None, "max_ms": None, "dn_min_ms": None, "dn_max_ms": None})
-    return out
+    return sort_rails(out)
 
 
 def _smooth(y, n=5):
@@ -107,7 +107,7 @@ def _slew(v_lo, v_hi, t_lo, t_hi):
 def analyze(waves, rails=None, ref="VIN", basis="hi", slave_skew_s=0.0, direction="auto"):
     """waves: {(model, ch): (t, y)} → rows。
 
-    「順序」編號依上 / 下電時間；回傳列序是輔機訊號在前再主機（同一台依 CH），沒穿越的仍留在原列位。
+    「順序」編號依上 / 下電時間；回傳列序是 VIN, VBUS, IBUS, BUSPG，再 CORE … RSTn；沒穿越的仍留在原列位。
     每列帶 direction。
     """
     rails = rails or default_rails()

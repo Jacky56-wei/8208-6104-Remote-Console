@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""輔機訊號列在前（VIN, VBUS, BUSPG, IBUS → CORE … RSTn）；「順序」仍依發生時間。"""
+"""輔機訊號列在前（VIN, VBUS, IBUS, BUSPG → CORE … RSTn）；「順序」仍依發生時間。"""
 from __future__ import annotations
 
 import unittest
@@ -11,7 +11,7 @@ from scope_wave_saver import sequencing as SQ
 from scope_wave_saver import speccmp as SC
 
 
-WANT = ["VIN", "VBUS", "BUSPG", "IBUS", "CORE", "DDRVPP", "GPIO", "DDRIO", "PHYIO", "NFIO", "NFCORE", "RSTn"]
+WANT = ["VIN", "VBUS", "IBUS", "BUSPG", "CORE", "DDRVPP", "GPIO", "DDRIO", "PHYIO", "NFIO", "NFCORE", "RSTn"]
 
 
 def _wave(t0, t1, v0, v1, n=2000, tmin=-1e-3, tmax=5e-3):
@@ -46,6 +46,11 @@ class SignalOrderTest(unittest.TestCase):
         self.assertEqual(R.all_names(), WANT)
         self.assertEqual(R.MODELS, (R.SLAVE_DEF, R.MASTER_DEF))
         self.assertEqual([x["name"] for x in SQ.default_rails()], WANT)
+        # 6104B 硬體通道不變
+        self.assertEqual(R.NAMES[R.SLAVE_DEF], ["VIN", "VBUS", "BUSPG", "IBUS"])
+        by = {x["name"]: x["ch"] for x in SQ.default_rails()}
+        self.assertEqual(by["IBUS"], 4)
+        self.assertEqual(by["BUSPG"], 3)
 
     def test_analyze_lists_slave_first_but_numbers_by_time(self):
         rows = SQ.analyze(_waves_up(), SQ.default_rails(), ref="VIN", basis="hi")
@@ -71,10 +76,10 @@ class SignalOrderTest(unittest.TestCase):
         meas["CORE"] = 0.86
         result = SC.compare_measurements(meas)
         chs = [r["ch"] for r in result["rows"] if r.get("kind") == "design"]
-        # 公開輸入 VIN 列在設計列之後，不算 design；IBUS 應在 BUSPG 之後、CORE 之前
-        self.assertEqual(chs[:4], ["VIN", "VBUS", "BUSPG", "IBUS"])
+        # 公開輸入 VIN 列在設計列之後，不算 design；IBUS 在 VBUS 之後、BUSPG 之前
+        self.assertEqual(chs[:4], ["VIN", "VBUS", "IBUS", "BUSPG"])
         self.assertEqual(chs[4], "CORE")
-        self.assertLess(chs.index("IBUS"), chs.index("CORE"))
+        self.assertLess(chs.index("IBUS"), chs.index("BUSPG"))
         self.assertEqual(chs[-1], "RSTn")
 
 

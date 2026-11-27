@@ -53,7 +53,7 @@
 - 每條 rail：**10 % / 90 %**（可改）× 標稱 → 穿越時間；上升 / 下降時間；**slew rate V/ms**（下電為負；IBUS 電流 A/ms：上電 = 10→90 % 峰值，下電 = 起始電流 90→10 %）
 - RSTn、BUSPG = 邏輯訊號：上 / 下電時間用 **邏輯門檻 V**（預設 0.7 × 標稱，可改）
 - 上 / 下電時間 = 高門檻（power good，預設）或低門檻；**順序**編號依發生時間、對 **參考 rail（預設 VIN）的延遲**
-- 列表列序（⑦ 時序表／圖／時序 CSV、⑨ 規格表、合一張圖例、`summary.csv` 欄位、P 量測列表）：**輔機訊號在前**（VIN, VBUS, BUSPG, IBUS），再主機（CORE, DDRVPP, GPIO, DDRIO, PHYIO, NFIO, NFCORE, RSTn）。「順序」欄仍是上 / 下電發生次序。示波器端 P 編號不變（8208HD P1–P12、6104B P1–P8）
+- 列表列序（⑦ 時序表／圖／時序 CSV、⑨ 規格表、合一張圖例、`summary.csv` 欄位、P 量測列表）：**輔機訊號在前**（VIN, VBUS, IBUS, BUSPG），再主機（CORE, DDRVPP, GPIO, DDRIO, PHYIO, NFIO, NFCORE, RSTn）。「順序」欄仍是上 / 下電發生次序。示波器端 P 編號不變（8208HD P1–P12、6104B P1–P8）
 - 可選：每條 rail **上電延遲下限 / 上限**、**下電延遲下限 / 上限**（ms）→ PASS / FAIL（範例：CORE、RSTn 已填，可清掉）
 - 右側「上 / 下電時序」分頁：表格 ＋ 時序圖（上到下：輔機再主機；標 10 / 90 % 點、紅線 = 觸發、藍虛線 = 參考）；每次擷取存 CSV ＋ PNG
 

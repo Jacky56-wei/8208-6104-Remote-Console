@@ -30,7 +30,7 @@ from .pmeas import MATH_MAX, NONE, PARAMS, default_rows, inst_max, parse as pm_p
 
 PASS_C, FAIL_C, ERR_C = ("#1a7f37", "#dafbe1"), ("#cf222e", "#ffebe9"), ("#9a6700", "#fff8c5")
 RED = "#cf222e"
-from .rails import MASTER_DEF, NAMES, NCH, SLAVE_DEF, UNIT_A, VNOM  # noqa: E402
+from .rails import MASTER_DEF, NAMES, NCH, SLAVE_DEF, UNIT_A, VNOM, name_rank  # noqa: E402
 from . import speccmp as SC  # noqa: E402
 TITLE_M = {"8208HD": "WaveRunner 8208HD（8 CH）", "6104B": "HDO6104B（4 CH）"}
 KEY = {"8208HD": "wr8000", "6104B": "hdo6104"}
@@ -1003,7 +1003,7 @@ class WaveSaverUI(tk.Tk):
                                          r[18] or r[19]), tags=(x.get("verdict") or "",))
         ov = SQ.overall(rows)
         d = SQ.DIR_TXT.get(SQ.direction_of(rows), "")
-        order = " → ".join(x["name"] for x in rows if x.get("order"))
+        order = SQ.sequence_text(rows)
         self.v_seq_sum.set(f"{title}{d}順序：{order}" + (f"　判定 {ov}" if ov else ""))
         SQ.draw(self.fig_seq, rows, waves, ref=self.v["seq_ref"].get(), fam=[self.fam, "Noto Sans CJK JP", "DejaVu Sans"])
         self.cv_seq.draw_idle()
@@ -2380,6 +2380,7 @@ class WaveSaverUI(tk.Tk):
         fam = [self.fam, "Noto Sans CJK JP", "DejaVu Sans"]
         if merge:
             allw = [(m, role, i, w) for m, role in roles for i, w in self.waves[m].items()]
+            allw.sort(key=lambda x: name_rank(NAMES[x[0]][x[2] - 1] if 1 <= x[2] <= len(NAMES[x[0]]) else ""))
             n = len(allw)
             for k, (m, role, i, (t, y)) in enumerate(allw):
                 ax = self.fig.add_subplot(n, 1, k + 1) if stack else (self.fig.axes[0] if self.fig.axes else self.fig.add_subplot(111))

@@ -32,7 +32,7 @@ from . import sequencing as SQ
 from .lecroy import parse_wavedesc
 from .link import Disconnected
 from .speccmp import SPEC_CSV
-from .rails import SLAVE_DEF
+from .rails import SLAVE_DEF, sort_rails
 
 POLL_S = 0.015
 ARM_CONFIRM_S = 5.0
@@ -441,7 +441,7 @@ class Capture:
 
     def _summary(self, seq, t_trig, s_ok, folder, sq_rows, verdict, pm_rows, nfiles, waves=None):
         path = os.path.join(self.run_dir, "summary.csv")
-        srt = sorted(sq_rows, key=lambda x: (x["model"] != SLAVE_DEF, x["ch"]))
+        srt = sort_rails(sq_rows)
         # 與 ⑦ 同一套：延遲（對參考 = Δt）、10↔90 % 時間、slew rate
         rail_cols = [f"{x['role']}{x['name']} 延遲 ms" for x in srt if x["kind"] != "current"] + \
                     [f"{x['role']}{x['name']} 10-90% ms" for x in srt] + \

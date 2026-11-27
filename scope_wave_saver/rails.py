@@ -10,8 +10,10 @@ NCH = {"8208HD": 8, "6104B": 4}
 # 預設 bus name：同 u2core/scope2 A8_NAMES（主 8 CH）/ B4_NAMES（輔 4 CH）
 NAMES = {"8208HD": ["CORE", "DDRVPP", "GPIO", "DDRIO", "PHYIO", "NFIO", "NFCORE", "RSTn"],
          "6104B": ["VIN", "VBUS", "BUSPG", "IBUS"]}
-# VIN, VBUS, BUSPG, IBUS, CORE, DDRVPP, GPIO, DDRIO, PHYIO, NFIO, NFCORE, RSTn
-SIGNAL_ORDER = tuple(nm for m in MODELS for nm in NAMES[m])
+# 列表列序（與示波器 CH 編號分開）：輔機 VIN, VBUS, IBUS, BUSPG，再主機 CORE … RSTn
+# 6104B 硬體通道仍是 C1 VIN、C2 VBUS、C3 BUSPG、C4 IBUS（NAMES 不變）
+SIGNAL_ORDER = ("VIN", "VBUS", "IBUS", "BUSPG",
+                "CORE", "DDRVPP", "GPIO", "DDRIO", "PHYIO", "NFIO", "NFCORE", "RSTn")
 VNOM = {"CORE": 0.84, "DDRVPP": 2.5, "GPIO": 1.8, "DDRIO": 1.2, "PHYIO": 1.2, "NFIO": 1.2, "NFCORE": 0.9, "RSTn": 1.8,
         "VIN": 12.0, "VBUS": 12.0, "BUSPG": 3.3, "IBUS": 0.0}
 UNIT_A = {"IBUS"}                 # 電流通道（單位 A；Auto scale 不動；上電時序只報峰值）
@@ -23,7 +25,7 @@ def kind(name):
 
 
 def all_names():
-    """列表用通道名：輔機 VIN / VBUS / BUSPG / IBUS，再主機 CORE … RSTn。"""
+    """列表用通道名：輔機 VIN / VBUS / IBUS / BUSPG，再主機 CORE … RSTn。"""
     return list(SIGNAL_ORDER)
 
 
@@ -41,15 +43,22 @@ def name_rank(name):
 
 
 def sort_key(row):
-    """dict（model + ch）或通道名 → 列表排序鍵。"""
+    """dict（含 name 或 ch）或通道名 → 依 SIGNAL_ORDER。"""
     if isinstance(row, dict):
-        m = row.get("model")
-        ch = int(row.get("ch") or 0)
-        return (0 if m == SLAVE_DEF else 1 if m == MASTER_DEF else 2, ch, name_rank(row.get("name")))
-    return (0, 0, name_rank(row))
+        nm = row.get("name") or row.get("ch") or row.get("rail")
+        # ch 若是數字，改用 name
+        if nm is not None and not isinstance(nm, str):
+            nm = row.get("name")
+        if not nm and row.get("model") and row.get("ch"):
+            m, c = row["model"], int(row["ch"])
+            names = NAMES.get(m) or []
+            if 1 <= c <= len(names):
+                nm = names[c - 1]
+        return (name_rank(nm),)
+    return (name_rank(row),)
 
 
 def sort_rails(rows):
-    """列表／圖例／時序 CSV：輔機訊號在前，同一台依 CH。"""
+    """列表／圖例／時序 CSV：VIN, VBUS, IBUS, BUSPG，再 CORE … RSTn。"""
     return sorted(list(rows or []), key=sort_key)
 
