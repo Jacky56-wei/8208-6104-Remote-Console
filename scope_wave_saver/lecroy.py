@@ -7,8 +7,8 @@
     （u2tools/timing/scope_hdo.py connect()；只影響傳輸格式，不改擷取設定）
   · 波形 "Cn:WAVEFORM? ALL" → WAVEDESC 解析（scope_hdo.parse_wavedesc，改成 8 通道 / 讀單位）
   · 螢幕 HARDCOPY_SETUP DEV,PNG,BCKG,BLACK,DEST,REMOTE,AREA,DSOWINDOW → SCREEN_DUMP（u2core/scope8208.fetch_png）
-不送 *RST、Default Setup、RECALL、*CAL、TRIG_MODE、V/div、時基（不改示波器設定）。
-唯一例外：stop_first=True 時送 STOP（讓各通道是同一次擷取），預設不送。
+這裡的讀取函式不送 *RST、Default Setup、RECALL、*CAL；設定寫入走 settings.py / busname.py / pmeas.py（呼叫 w()）。
+SimScope / SimBus：沒有硬體時的模擬（示範模式）：SINGLE arm / 觸發 / INR? / 上電時序波形 / 模擬拔 USB。
 """
 from __future__ import annotations
 
@@ -174,7 +174,12 @@ class LeCroyScope:
     def __exit__(self, *a):
         self.close()
 
-    # -- 讀取 -------------------------------------------------------------
+    sim = False
+
+    # -- 讀寫 -------------------------------------------------------------
+    def w(self, cmd):
+        self.inst.write(cmd)
+
     def q(self, cmd):
         return self.inst.query(cmd).strip()
 
@@ -240,10 +245,112 @@ class LeCroyScope:
         return out
 
 
+class SimDisconnect(OSError):
+    """模擬 USB 中斷（VI_ERROR_TMO / VI_ERROR_CONN_LOST 的替身）"""
+
+
+class SimBus:
+    """兩台模擬示波器共用：主觸發 → AUX OUT → 輔 EXT（輔有 arm 才會觸發）＋ 模擬拔 USB"""
+
+    def __init__(self, trig_delay=(0.4, 1.2), seed=None, direction="alt"):
+        self.trig_delay = trig_delay
+        self.direction = direction                  # "up" / "down" / "alt"（上電、下電輪流）
+        self.dir = "up"
+        self.rng = np.random.default_rng(seed)
+        self.scopes = {}
+        self.down_until = {}
+        self.n_trig = 0
+
+    def unplug(self, model, seconds):
+        self.down_until[model] = time.time() + float(seconds)
+
+    def is_down(self, model):
+        return time.time() < self.down_until.get(model, 0.0)
+
+    def fire(self):
+        """主觸發的那一刻：產生這次的上電波形（兩台共用時間軸）＋ 有 arm 的輔一起觸發"""
+        self.n_trig += 1
+        self.dir = self.direction if self.direction in ("up", "down") else ("up" if self.n_trig % 2 else "down")
+        jit = {nm: float(self.rng.normal(0, 0.03e-3)) for m in ("8208HD", "6104B") for nm in _sim_names(m)}
+        for sc in self.scopes.values():
+            if sc.mode == "SINGLE":
+                sc.mode, sc.inr, sc.jit, sc.t_trig = "STOP", 1, jit, time.time()
+
+
+def _sim_names(model):
+    from .rails import NAMES
+    return NAMES[model]
+
+
+def sim_waves(model, jit=None, t0=-2e-3, t1=8e-3, n=10000, rng=None, direction="up"):
+    """上電時序（觸發 t = 0 = 主 C1 CORE 上升到 0.42 V；輔 VIN 比觸發早約 0.6 ms）→ {ch: (t, y)}
+    direction="down"：下電（反順序：RSTn / BUSPG 先掉，VIN 最後；下降比上升慢）"""
+    if direction == "down":
+        return _sim_down(model, jit, t0, t1, n, rng)
+    from .rails import NAMES, VNOM
+    rng = rng or np.random.default_rng()
+    jit = jit or {}
+    t = np.linspace(t0, t1, n)
+    out = {}
+    for i, nm in enumerate(NAMES[model]):
+        v = VNOM.get(nm, 1.0) or 1.5
+        d = ((i * 0.45e-3) if model == "8208HD" else (-0.6e-3 + i * 0.25e-3)) + jit.get(nm, 0.0)
+        if model == "8208HD":
+            d -= 0.125e-3                                   # CORE 0.42 V（50 %）落在 t = 0
+        tau = 0.25e-3
+        y = v * np.clip((t - d) / tau, 0, 1) if not nm.endswith("n") and nm != "BUSPG" else v * (t > d + 1.2e-3)
+        if nm == "IBUS":
+            y = 0.8 * np.exp(-np.clip(t - d, 0, None) / 1e-3) * (t > d) + 0.15 * (t > d)
+        out[i + 1] = (t, y + 0.004 * v * rng.standard_normal(n))
+    return out
+
+
+def _sim_down(model, jit, t0, t1, n, rng):
+    from .rails import NAMES, VNOM
+    rng = rng or np.random.default_rng()
+    jit = jit or {}
+    t = np.linspace(t0, t1, n)
+    out = {}
+    for i, nm in enumerate(NAMES[model]):
+        v = VNOM.get(nm, 1.0) or 1.5
+        if model == "8208HD":
+            d = -0.2e-3 - i * 0.22e-3                          # CORE 50 % 落在 t = 0；RSTn 最早
+        else:
+            d = {0: 2.6e-3, 1: 2.2e-3, 2: -1.85e-3, 3: 1.8e-3}.get(i, 0.0)   # BUSPG 最早掉、VIN 最後
+        d += jit.get(nm, 0.0)
+        tau = 0.4e-3 if model == "8208HD" else 0.9e-3
+        if nm.endswith("n") or nm == "BUSPG":
+            y = v * (t < d)
+        elif nm == "IBUS":
+            y = 0.15 * (1 - np.clip((t - d) / 0.3e-3, 0, 1))
+        else:
+            y = v * (1 - np.clip((t - d) / tau, 0, 1))
+        out[i + 1] = (t, y + 0.004 * v * rng.standard_normal(n))
+    return out
+
+
 class SimScope(LeCroyScope):
-    """模擬示波器（沒有硬體時測試用）"""
+    """模擬示波器（沒有硬體時測試用）：SINGLE / INR? / TRIG_MODE? / WAVEFORM? / SCREEN_DUMP（示意圖）"""
+    sim = True
+
+    def __init__(self, addr, model, log=print, timeout_ms=60000, bus=None, png=None):
+        super().__init__(addr, model, log, timeout_ms)
+        self.bus = bus or SimBus()
+        self.bus.scopes[self.model] = self
+        self.png = png
+        self.mode, self.inr, self.jit, self.t_trig, self.t_arm = "STOP", 0, {}, None, None
+        self.sent = []
+
+    def _chk(self):
+        if self.bus.is_down(self.model):
+            self.inst = None
+            raise SimDisconnect(f"VI_ERROR_TMO（模擬 USB 中斷：{self.model}）")
+        if self.inst is None:
+            raise SimDisconnect(f"VI_ERROR_CONN_LOST（模擬：{self.model} 尚未重新開啟）")
 
     def open(self, check_model=True):
+        if self.bus.is_down(self.model):
+            raise SimDisconnect(f"VI_ERROR_RSRC_NFOUND（模擬：{self.addr} 不在 USB 上）")
         self.idn = f"LECROY,{'WR8208HD' if self.model == '8208HD' else 'HDO6104B'},SIM0000,MAUI (模擬)"
         self.inst = True
         return self.idn
@@ -251,19 +358,64 @@ class SimScope(LeCroyScope):
     def close(self):
         self.inst = None
 
+    def _tick(self):
+        if self.model == "8208HD" and self.mode == "SINGLE" and self.t_arm and time.time() >= self.t_arm:
+            self.bus.fire()
+
+    def w(self, cmd):
+        self._chk()
+        self.sent.append(cmd)
+        c = cmd.strip().upper()
+        if c == "STOP":
+            self.mode = "STOP"
+        elif c.startswith("TRIG_MODE") or c.startswith("TRMD"):
+            self.mode = c.split()[-1]
+            if self.mode == "SINGLE" and self.model == "8208HD":
+                self.t_arm = time.time() + float(self.bus.rng.uniform(*self.bus.trig_delay))
+
     def q(self, cmd):
-        return "ON" if cmd.endswith("TRACE?") else "1E-6"
+        self._chk()
+        self._tick()
+        c = cmd.strip().upper()
+        if c == "*IDN?":
+            return self.idn
+        if c == "INR?":
+            v, self.inr = self.inr, 0
+            return str(v)
+        if c in ("TRIG_MODE?", "TRMD?"):
+            return self.mode
+        if c == "*OPC?":
+            return "1"
+        if c == "TIME_DIV?":
+            return "1E-3"
+        if c == "TRIG_DELAY?":
+            return "-3E-3"
+        if c == "TRIG_SELECT?":
+            return "EDGE,SR,EX10,HT,OFF" if self.model == "6104B" else "EDGE,SR,C1,HT,OFF"
+        if "AUXOUTPUT" in c or "AUXMODE" in c:
+            return "TriggerOut"
+        if "WAITUNTILIDLE" in c:
+            return "1"
+        if "APP.MEASURE.P" in c:                          # 模擬：示波器 P 值讀不到 → 只有 PC 計算值
+            return "VBS "
+        return "ON" if c.endswith("TRACE?") else "1E-6"
 
     def stop(self):
-        pass
+        self.w("STOP")
 
     def read_raw_wave(self, trace):
+        self._chk()
         k = int(re.sub(r"\D", "", trace) or 1)
-        t = np.arange(10000) * 1e-8
-        y = (k * 0.5) * np.sin(2 * np.pi * 1e5 * t + k) + 0.01 * np.random.randn(t.size)
-        return encode_wavedesc(y, 1e-8, -5e-5, "V", k - 1, self.model)
+        rng = np.random.default_rng(self.bus.n_trig * 100 + k)
+        t, y = sim_waves(self.model, self.jit, rng=rng, direction=self.bus.dir)[k]
+        return encode_wavedesc(y, float(t[1] - t[0]), float(t[0]), "A" if (self.model, k) == ("6104B", 4) else "V",
+                               k - 1, self.model)
 
     def screen_png(self):
+        self._chk()
+        if self.png:
+            with open(self.png, "rb") as f:
+                return f.read()
         import zlib
         w, h = 4, 4
         rows = b"".join(b"\0" + b"\x20\x20\x20" * w for _ in range(h))

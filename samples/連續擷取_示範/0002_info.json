@@ -1,0 +1,66 @@
+{
+ "seq": 2,
+ "time": "2026-11-27T21:52:02.408",
+ "slave_triggered": true,
+ "idn": {
+  "6104B": "LECROY,HDO6104B,SIM0000,MAUI (模擬)",
+  "8208HD": "LECROY,WR8208HD,SIM0000,MAUI (模擬)"
+ },
+ "trig": "觸發：主 C1 POS 0.42 V → Aux Out → 輔 EXT",
+ "gap_before": "",
+ "channels": {
+  "8208HD": [
+   [
+    1,
+    "CORE"
+   ],
+   [
+    2,
+    "DDRVPP"
+   ],
+   [
+    3,
+    "GPIO"
+   ],
+   [
+    4,
+    "DDRIO"
+   ],
+   [
+    5,
+    "PHYIO"
+   ],
+   [
+    6,
+    "NFIO"
+   ],
+   [
+    7,
+    "NFCORE"
+   ],
+   [
+    8,
+    "RSTn"
+   ]
+  ],
+  "6104B": [
+   [
+    1,
+    "VIN"
+   ],
+   [
+    2,
+    "VBUS"
+   ],
+   [
+    3,
+    "BUSPG"
+   ],
+   [
+    4,
+    "IBUS"
+   ]
+  ]
+ },
+ "sequencing_verdict": "PASS"
+}

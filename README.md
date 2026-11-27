@@ -3,7 +3,7 @@
 Teledyne LeCroy **WaveRunner 8208HD（主 MASTER，8 CH）＋ HDO6104B（輔 SLAVE，4 CH）** 雙示波器遠端控制工具：
 觸發設定、bus name、P1–P24 量測；連線後背景自動對時、Auto scale、主 Aux Out → 輔 EXT 主從觸發，兩台實圖同時看，波形存到中控電腦。
 
-目前為 UI 原型（示意資料，尚未接實機）。完整說明：[`README_zh-TW.md`](README_zh-TW.md)。
+預設為示範模式（模擬示波器跑完整流程：連續擷取、上 / 下電時序與 slew rate、USB 自動重連）；`--real` 接實機，尚未實機測試。完整說明：[`README_zh-TW.md`](README_zh-TW.md)。
 
 ## Run (Windows)
 
