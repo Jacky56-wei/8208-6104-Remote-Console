@@ -105,3 +105,30 @@ class NvmeLineTest(unittest.TestCase):
         self.assertTrue(text.startswith("2 顆"))
         self.assertIn("nvme1n1", tip)
         self.assertEqual(vd, "PASS")
+
+
+class LinuxLinkTest(unittest.TestCase):
+    def test_probe_and_link_sim(self):
+        import time
+        from scope_wave_saver import nvmehost as NH
+        info = NH.probe(NH.SimHost())
+        self.assertEqual(info, {"hostname": "demo-linux", "kernel": "6.8.0-demo", "user": "root"})
+        seen = []
+
+        def on(state, detail, inf, last):
+            seen.append(state)
+
+        ln = NH.LinuxLink(lambda: {"host": NH.DEMO_HOST, "port": 22, "user": "root", "password": ""},
+                          log=lambda *_: None, on_state=on, sim=True)
+        ln.start()
+        try:
+            for _ in range(40):
+                if ln.up:
+                    break
+                time.sleep(0.05)
+            self.assertTrue(ln.up, f"states={seen}")
+            self.assertEqual(ln.info.get("hostname"), "demo-linux")
+            self.assertIsNotNone(ln.last_check)
+        finally:
+            ln.stop()
+        self.assertEqual(ln.state, "idle")

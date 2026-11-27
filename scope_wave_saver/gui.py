@@ -271,6 +271,23 @@ class WaveSaverUI(tk.Tk):
             ttk.Label(chip, textvariable=st, style="U.Muted.TLabel").pack(side="left", padx=(4, 0))
             self.rows[m] = type("Chip", (), {"dot": dot, "model": m})()
             self.Tip(chip, lambda m=m: (self.idn_var[m].get() or self.st_var[m].get() or short))
+        # Linux：只在啟用 NVMe rescan 時顯示（① 連線列）
+        self.linux_chip = ttk.Frame(strip)
+        self.v_linux_name = tk.StringVar(self, value="Linux")
+        self.st_var["Linux"] = tk.StringVar(self, value="")
+        self.idn_var["Linux"] = tk.StringVar(self, value="")
+        ldot = Dot(self.linux_chip, size=12)
+        ldot.pack(side="left", padx=(0, 4))
+        ttk.Label(self.linux_chip, textvariable=self.v_linux_name, font=(self.fam, 10, "bold")).pack(side="left")
+        ttk.Label(self.linux_chip, textvariable=self.st_var["Linux"], style="U.Muted.TLabel").pack(side="left", padx=(4, 0))
+        self.rows["Linux"] = type("Chip", (), {"dot": ldot, "model": "Linux"})()
+        self.Tip(self.linux_chip, self._linux_tip_text)
+        # 預設不 pack；啟用 NVMe 後才出現
+        self.linux_link = None
+        self._linux_info = {}
+        self._linux_last_check = None
+        self._linux_state = "idle"
+
         ttk.Button(strip, text="⚙ 位址 / 進階", style="U.Small.TButton",
                    command=self._conn_dialog).pack(side="right")
         warn = ttk.Frame(body.conn)
@@ -292,7 +309,7 @@ class WaveSaverUI(tk.Tk):
         w.title("儀器位址 / 進階")
         w.transient(self)
         self._conn_win = w
-        ttk.Label(w, text="背景自動連線與 USB 重連會一直跑；這裡只改 VISA 位址，或示範模擬拔線。",
+        ttk.Label(w, text="背景自動連線與 USB／SSH 重連會一直跑；這裡改 VISA 位址與 Linux SSH（啟用 NVMe rescan 才連）。示範可模擬拔線。",
                   style="U.Muted.TLabel", wraplength=680, justify="left").pack(anchor="w", padx=12, pady=(10, 6))
         for m, title in ((MASTER_DEF, TITLE_M[MASTER_DEF]), (SLAVE_DEF, TITLE_M[SLAVE_DEF]),
                          ("N6705", "Keysight N6705（ARB 電源）")):
@@ -307,7 +324,136 @@ class WaveSaverUI(tk.Tk):
             if self.demo:
                 ttk.Button(lf, text="模擬拔 USB 5 s（示範）", style="U.Small.TButton",
                            command=lambda m=m: self.sim_unplug(m, 5.0)).pack(anchor="w", pady=(4, 0))
+        lf = ttk.LabelFrame(w, text=" Linux 主機（SSH，啟用 NVMe rescan 才連線） ", padding=8)
+        lf.pack(fill="x", padx=12, pady=4)
+        r = ttk.Frame(lf)
+        r.pack(fill="x")
+        ttk.Label(r, text="主機").pack(side="left")
+        ttk.Entry(r, textvariable=self.v["nvme_host"], width=18).pack(side="left", padx=4)
+        ttk.Label(r, text="埠").pack(side="left")
+        ttk.Entry(r, textvariable=self.v["nvme_port"], width=5).pack(side="left", padx=4)
+        ttk.Label(r, text="帳號").pack(side="left")
+        ttk.Entry(r, textvariable=self.v["nvme_user"], width=10).pack(side="left", padx=4)
+        ttk.Label(r, text="密碼").pack(side="left")
+        ttk.Entry(r, textvariable=self.v["nvme_pw"], width=12, show="*").pack(side="left", padx=4)
+        ttk.Button(r, text="重新連線", style="U.Small.TButton",
+                   command=self._linux_reconnect).pack(side="left", padx=8)
+        ttk.Label(lf, textvariable=self.idn_var["Linux"], style="U.Muted.TLabel").pack(anchor="w", pady=(4, 0))
+        ttk.Label(lf, text="與 ⑧ Linux NVMe rescan 同一組設定。", style="U.Muted.TLabel").pack(anchor="w")
         ttk.Button(w, text="關閉", command=w.destroy).pack(pady=10)
+
+    def _linux_cfg(self):
+        return {
+            "host": (self.v.get("nvme_host").get() if self.v.get("nvme_host") else "").strip(),
+            "port": self.v["nvme_port"].get() if self.v.get("nvme_port") else "22",
+            "user": (self.v["nvme_user"].get() if self.v.get("nvme_user") else "root").strip() or "root",
+            "password": self.v["nvme_pw"].get() if self.v.get("nvme_pw") else "",
+        }
+
+    def _linux_tip_text(self):
+        st = getattr(self, "_linux_state", "idle")
+        info = getattr(self, "_linux_info", {}) or {}
+        last = getattr(self, "_linux_last_check", None)
+        if last:
+            t = _dt.datetime.fromtimestamp(last).strftime("%Y-%m-%d %H:%M:%S")
+            last_s = f"{t}（台北時間）"
+        else:
+            last_s = "—"
+        st_txt = {"up": "已連線", "connecting": "連線中…", "down": "失敗，背景重連中",
+                  "idle": "待命（未連線）"}.get(st, st)
+        if st == "down" and self.st_var.get("Linux"):
+            extra = (self.st_var["Linux"].get() or "").strip()
+            if extra:
+                st_txt = f"{st_txt}：{extra}"
+        return (f"主機名稱：{info.get('hostname') or '—'}\n"
+                f"核心：{info.get('kernel') or '—'}\n"
+                f"帳號：{info.get('user') or self._linux_cfg().get('user') or '—'}\n"
+                f"上次檢查：{last_s}\n"
+                f"狀態：{st_txt}")
+
+    def _linux_label(self):
+        host = self._linux_cfg().get("host")
+        if not host:
+            from .nvmehost import DEMO_HOST
+            host = DEMO_HOST if self.demo else "（未填主機）"
+        return f"Linux {host}"
+
+    def _linux_chip_visible(self, on):
+        bar = getattr(self, "linux_chip", None)
+        if bar is None:
+            return
+        if on:
+            self.v_linux_name.set(self._linux_label())
+            if not bar.winfo_ismapped():
+                bar.pack(side="left", padx=(0, 14))
+        else:
+            bar.pack_forget()
+
+    def _linux_dot(self, state):
+        try:
+            if state == "up":
+                col = PASS_C[0]
+            elif state == "down":
+                col = FAIL_C[0]
+            else:
+                col = "#8C959F"          # idle / connecting：灰
+            self.rows["Linux"].dot.set(col)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _on_linux_link(self, state, detail, info, last_check):
+        self._linux_state = state
+        self._linux_info = info or {}
+        self._linux_last_check = last_check
+        self.v_linux_name.set(self._linux_label())
+        if state == "up":
+            self.st_var["Linux"].set("")
+            who = " · ".join(x for x in (info.get("hostname"), info.get("kernel")) if x)
+            self.idn_var["Linux"].set(who or "已連線")
+        elif state == "connecting":
+            self.st_var["Linux"].set("連線中…")
+            self.idn_var["Linux"].set(detail or "連線中…")
+        elif state == "down":
+            self.st_var["Linux"].set("⚠ 斷線")
+            self.idn_var["Linux"].set(f"失敗：{(detail or '')[:80]}")
+        else:
+            self.st_var["Linux"].set("未連線" if detail == "未填主機" else "")
+            self.idn_var["Linux"].set(detail or "")
+        self._linux_dot(state)
+
+    def _linux_start(self):
+        from . import nvmehost as NH
+        self._linux_stop()
+        # 示範且未填主機 → 用示範 IP，連線列才看得到「Linux <IP>」
+        if self.demo and self.v.get("nvme_host") and not self.v["nvme_host"].get().strip():
+            self.v["nvme_host"].set(NH.DEMO_HOST)
+        self.v_linux_name.set(self._linux_label())
+        self.linux_link = NH.LinuxLink(
+            self._linux_cfg, log=self.log,
+            on_state=lambda *a: self.q_ui.put(("linux",) + a),
+            sim=self.demo,
+        )
+        self.linux_link.start()
+
+    def _linux_stop(self):
+        ln = getattr(self, "linux_link", None)
+        self.linux_link = None
+        if ln is not None:
+            try:
+                ln.stop()
+            except Exception:  # noqa: BLE001
+                pass
+        self._linux_state, self._linux_info, self._linux_last_check = "idle", {}, None
+        if "Linux" in self.st_var:
+            self.st_var["Linux"].set("")
+            self.idn_var["Linux"].set("")
+        self._linux_dot("idle")
+
+    def _linux_reconnect(self):
+        if self.v.get("nvme_on") and self.v["nvme_on"].get():
+            self._linux_start()
+        else:
+            self.log("Linux：請先在 ⑧ 勾選「啟用 Linux NVMe rescan」")
 
     def bg_result(self, model, task, ok, msg=""):
         """背景工作（對時 / Auto scale）結果：成功 → 只寫紀錄；失敗 → 紀錄 ＋ ① 該台下方紅字"""
@@ -1394,6 +1540,8 @@ class WaveSaverUI(tk.Tk):
                     self._log_line(it[1])
                 elif k == "link":
                     self._on_link(*it[1:])
+                elif k == "linux":
+                    self._on_linux_link(*it[1:])
                 elif k == "bg":
                     self.bg_result(*it[1:])
                 elif k == "cap":
@@ -1666,12 +1814,16 @@ class WaveSaverUI(tk.Tk):
             self._nvme_ensure_tab()
             self._nvme_line_visible(True)
             self._nvme_line_set(pending=True)
+            self._linux_chip_visible(True)
+            self._linux_start()
             if self.demo:
                 self.after(50, self._nvme_now)
         else:
             self.nvme_box.pack_forget()
             self._nvme_drop_tab()
             self._nvme_line_visible(False)
+            self._linux_stop()
+            self._linux_chip_visible(False)
 
     def _nvme_ensure_tab(self):
         if self.nvme_tab is not None:
@@ -1728,15 +1880,22 @@ class WaveSaverUI(tk.Tk):
 
         def job():
             from . import nvmehost as NH
+            wait = float(self.v["nvme_wait"].get() or 2)
             try:
-                h = NH.connect(self.v["nvme_host"].get(), port=self.v["nvme_port"].get() or 22,
-                               user=self.v["nvme_user"].get(), password=self.v["nvme_pw"].get(),
-                               sim=self.demo)
-                rows, note = NH.rescan_and_list(h, wait_s=float(self.v["nvme_wait"].get() or 2))
-                try:
-                    h.close()
-                except Exception:  # noqa: BLE001
-                    pass
+                ln = getattr(self, "linux_link", None)
+                if ln is not None and ln.up:
+                    rows, note = ln.call(lambda h: NH.rescan_and_list(h, wait_s=wait))
+                else:
+                    cfg = self._linux_cfg()
+                    h = NH.connect(cfg["host"], port=cfg["port"], user=cfg["user"],
+                                   password=cfg["password"], sim=self.demo)
+                    try:
+                        rows, note = NH.rescan_and_list(h, wait_s=wait)
+                    finally:
+                        try:
+                            h.close()
+                        except Exception:  # noqa: BLE001
+                            pass
                 self.q_ui.put(("nvme", rows, note))
             except Exception as e:  # noqa: BLE001
                 self.q_ui.put(("nvme", {"error": str(e)}, str(e)))
@@ -2205,6 +2364,7 @@ class WaveSaverUI(tk.Tk):
                 self.cap.th.join(3.0)                 # 等 N6705 安全中止送完
         for ln in list(self.links.values()) + ([self.psu] if self.psu else []):
             ln.close()
+        self._linux_stop()
         try:
             self._persist_sash()
             self.ui_store.save()
@@ -2306,6 +2466,9 @@ def main(argv=None):
     if a.nvme:
         def _en_nvme():
             if "nvme_on" in app.v:
+                from scope_wave_saver.nvmehost import DEMO_HOST
+                if app.demo and app.v.get("nvme_host") and not app.v["nvme_host"].get().strip():
+                    app.v["nvme_host"].set(DEMO_HOST)
                 app.v["nvme_on"].set(True)
                 app._nvme_toggle()
         app.after(200, _en_nvme)

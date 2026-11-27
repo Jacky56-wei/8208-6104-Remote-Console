@@ -172,12 +172,15 @@ class NvmeError(RuntimeError):
 
 
 class SimHost:
-    """示範：不連 SSH，rescan 後回傳模擬 NVMe"""
+    """示範：不連 SSH，rescan 後回傳模擬 NVMe；探詢回傳模擬主機名稱／核心。"""
 
     def close(self):
         pass
 
     def run(self, cmd, timeout=30):
+        c = cmd or ""
+        if "uname -r" in c and "hostname" in c:
+            return 0, "demo-linux\n6.8.0-demo\nroot\n", ""
         return 0, "", ""
 
 
@@ -363,3 +366,166 @@ def rows_for_csv(drives):
     return {"NVMe 裝置": join("dev"), "NVMe 型號": join("model"), "NVMe 序號": join("serial"),
             "NVMe 容量": join("capacity"), "NVMe 韌體": join("fw"), "NVMe BDF": join("bdf"),
             "NVMe Link": join("link"), "NVMe 數": len(drives)}
+
+
+PROBE_CMD = "hostname; uname -r; id -un"
+# 示範連線列上顯示的位址（未填主機時）
+DEMO_HOST = "10.0.0.50"
+
+
+def probe(host):
+    """SSH 探詢：主機名稱、核心（uname -r）、帳號。失敗 → NvmeError。"""
+    rc, out, err = host.run(PROBE_CMD, timeout=8)
+    if rc not in (0, None):
+        raise NvmeError(f"SSH 探詢失敗 rc={rc}：{(err or out).strip()[:200]}")
+    lines = [x.strip() for x in (out or "").splitlines() if x.strip()]
+    if len(lines) < 3:
+        raise NvmeError("SSH 探詢回覆不完整（需要 hostname、uname -r、id -un）")
+    return {"hostname": lines[0], "kernel": lines[1], "user": lines[2]}
+
+
+def is_ssh_error(e):
+    """這個例外代表 SSH 連線出問題（應標紅燈並重連）。"""
+    if isinstance(e, (NvmeError, TimeoutError, ConnectionError, OSError, EOFError)):
+        return True
+    name = type(e).__name__
+    if name in ("AuthenticationException", "SSHException", "NoValidConnectionsError",
+                "socket.timeout", "gaierror"):
+        return True
+    s = str(e).lower()
+    return any(k in s for k in ("ssh", "timed out", "connection reset", "no route",
+                                "name or service not known", "authentication"))
+
+
+class LinuxLink:
+    """背景 SSH 連線／探詢／失敗重連（同儀器 Link 的退避）。paramiko 只在實機 connect() 時才 import。"""
+
+    BACKOFF = (1, 2, 4, 8, 15, 30)
+    KEEPALIVE_S = 8.0
+
+    def __init__(self, cfg_fn, log=print, on_state=None, sim=False):
+        self.cfg_fn = cfg_fn                          # () → {host, port, user, password}
+        self.log = log or (lambda *_: None)
+        self.on_state = on_state or (lambda *_: None)  # (state, detail, info)
+        self.sim = sim
+        self.dev = None
+        self.info = {}
+        self.last_check = None
+        self.state = "idle"                            # idle / connecting / up / down
+        self.detail = ""
+        self.lock = __import__("threading").RLock()
+        self._quit = __import__("threading").Event()
+        self._th = None
+
+    @property
+    def up(self):
+        return self.state == "up"
+
+    def _set(self, state, detail="", info=None):
+        self.state, self.detail = state, detail
+        if info is not None:
+            self.info = info
+        try:
+            self.on_state(state, detail, dict(self.info), self.last_check)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def start(self):
+        self._quit.clear()
+        self._spawn()
+
+    def _spawn(self):
+        import threading
+        if self._th is not None and self._th.is_alive():
+            return
+        self._th = threading.Thread(target=self._loop, name="link-Linux", daemon=True)
+        self._th.start()
+
+    def stop(self):
+        self._quit.set()
+        self._close_dev()
+        self.info, self.last_check = {}, None
+        self._set("idle", "已停止")
+
+    def _close_dev(self):
+        with self.lock:
+            h, self.dev = self.dev, None
+        if h is not None:
+            try:
+                h.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _cfg(self):
+        try:
+            return dict(self.cfg_fn() or {})
+        except Exception:  # noqa: BLE001
+            return {}
+
+    def _loop(self):
+        import time
+        k = 0
+        while not self._quit.is_set():
+            cfg = self._cfg()
+            host = str(cfg.get("host") or "").strip()
+            if not host and not self.sim:
+                self._close_dev()
+                self.info, self.last_check = {}, None
+                self._set("idle", "未填主機")
+                if self._quit.wait(1.0):
+                    return
+                continue
+            self._set("connecting", "連線中" if k == 0 else f"重連中（第 {k + 1} 次）")
+            try:
+                h = connect(host or DEMO_HOST,
+                            port=cfg.get("port") or 22,
+                            user=cfg.get("user") or "root",
+                            password=cfg.get("password") or "",
+                            sim=self.sim)
+                info = probe(h)
+                with self.lock:
+                    self.dev = h
+                self.last_check = time.time()
+                who = f"{info.get('hostname') or host}  {info.get('kernel') or ''}".strip()
+                self.log(f"[Linux] {'已連線' if k == 0 else '已重新連線'}：{who}")
+                self._set("up", "已連線", info)
+                k = 0
+                while not self._quit.is_set():
+                    if self._quit.wait(self.KEEPALIVE_S):
+                        return
+                    with self.lock:
+                        cur = self.dev
+                    if cur is None:
+                        break
+                    info = probe(cur)
+                    self.last_check = time.time()
+                    self._set("up", "已連線", info)
+            except Exception as e:  # noqa: BLE001
+                self._close_dev()
+                wait = self.BACKOFF[min(k, len(self.BACKOFF) - 1)]
+                self.log(f"[Linux] 連線失敗（第 {k + 1} 次）：{e} → {wait} s 後重試")
+                self._set("down", f"{e}")
+                k += 1
+                if self._quit.wait(wait):
+                    return
+
+    def call(self, fn, *a, **kw):
+        """在已連線的 SSH 上跑 fn(host, ...)；斷線 → NvmeError。"""
+        with self.lock:
+            h = self.dev
+            if not self.up or h is None:
+                raise NvmeError("Linux 尚未連線")
+            try:
+                return fn(h, *a, **kw)
+            except Exception as e:  # noqa: BLE001
+                if is_ssh_error(e):
+                    raise NvmeError(f"Linux SSH：{e}") from e
+                raise
+
+    def restart(self):
+        """設定改了：停掉再連。"""
+        was = not self._quit.is_set() or (self._th is not None and self._th.is_alive())
+        self.stop()
+        if was:
+            self._quit.clear()
+            self.start()
