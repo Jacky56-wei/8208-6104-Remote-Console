@@ -2739,8 +2739,15 @@ def main(argv=None):
     ap.add_argument("--nvme-auto", action="store_true", help="（測試／截圖）啟用 Linux NVMe 並勾選「上電後自動 rescan 認盤」")
     ap.add_argument("--nvme-fail-rate", type=float, default=0.0, help="（示範）自動 rescan 出狀況的機率 0–1：掉盤／晚到／降速／降寬／SMART")
     ap.add_argument("--nvme-sim-seq", default="", help="（示範）自動 rescan 的情境依序循環：ok,drop,late,down_speed,down_width,smart")
+    ap.add_argument("--sim-window", default="", help="（示範／截圖）模擬波形的時間窗 T0,T1（ms，例如 -8,10）；預設 -2,8")
     ap.add_argument("--nvme-stop-on-drop", action="store_true", help="（測試／截圖）勾選「掉盤時停止連續擷取」")
     a = ap.parse_args(argv)
+    if a.sim_window:
+        from . import lecroy as _lc
+        _t0, _t1 = (float(x) * 1e-3 for x in a.sim_window.split(","))
+        _d = list(_lc.sim_waves.__defaults__)     # (jit, t0, t1, n, rng, direction, vnom)
+        _d[1], _d[2] = _t0, _t1
+        _lc.sim_waves.__defaults__ = tuple(_d)
     # 截圖時用暫時版面檔，避免寫進使用者的 ui_layout.json
     layout = a.layout or ("-" if a.shot else "")
     app = WaveSaverUI(demo=not a.real, layout=layout)
