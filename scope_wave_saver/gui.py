@@ -1945,7 +1945,7 @@ class WaveSaverUI(tk.Tk):
                                      font=(self.fam, 10, "bold"), fg="#24292f", bg="#FFFFFF",
                                      anchor="w", padx=6, pady=2)
         self.lb_nvme_line.pack(side="left", fill="x", expand=True)
-        self._nvme_line_tip = "啟用 Linux NVMe rescan 後，擷取或按 ↻ 會更新這一列"
+        self._nvme_line_tip = "啟用 Linux NVMe rescan 後，按 ↻ 或（勾選「上電後自動 rescan」）上電擷取後會更新這一列"
         if getattr(self, "Tip", None):
             self.Tip(self.lb_nvme_line, lambda: self._nvme_line_tip or self.v_nvme_line.get())
         # 預設關閉，不 pack
@@ -1960,17 +1960,17 @@ class WaveSaverUI(tk.Tk):
         else:
             bar.pack_forget()
 
-    def _nvme_line_set(self, drives=None, error=None, pending=False):
+    def _nvme_line_set(self, drives=None, error=None, pending=False, result=None):
         if not hasattr(self, "v_nvme_line"):
             return
         from . import nvmehost as NH
         if pending:
             text, tip, vd = "尚未 rescan", "擷取或按 ↻ 立刻 rescan 後會列出碟機", ""
         else:
-            text, tip, vd = NH.homepage_line(drives, error)
+            text, tip, vd = NH.homepage_line(drives, error, result)
         self.v_nvme_line.set(text)
         self._nvme_line_tip = tip or text
-        fg, bg = {"PASS": ("#1a7f37", "#dafbe1"), "FAIL": ("#cf222e", "#ffebe9")}.get(
+        fg, bg = {"PASS": ("#1a7f37", "#dafbe1"), "FAIL": ("#cf222e", "#ffebe9"), "WARN": ("#7d4e00", "#fff8c5")}.get(
             vd, ("#24292f", "#FFFFFF"))
         self.lb_nvme_line.configure(fg=fg, bg=bg)
 
@@ -1995,6 +1995,7 @@ class WaveSaverUI(tk.Tk):
         ttk.Entry(r, textvariable=self._sv("nvme_wait", "2"), width=4).pack(side="left", padx=2)
         ttk.Label(r, text="s  後列舉").pack(side="left")
         ttk.Button(r, text="↻ 立刻 rescan", style="U.Small.TButton", command=self._nvme_now).pack(side="left", padx=8)
+        self._nvme_auto_build(self.nvme_box)
         from . import nvmehost as NH
         cols = NH.COLS
         tv = ttk.Treeview(self.nvme_box, columns=cols, show="headings", height=3)
@@ -2002,9 +2003,65 @@ class WaveSaverUI(tk.Tk):
             tv.heading(c, text=NH.COL_ZH[c])
             tv.column(c, width=110 if c != "capacity" else 180, anchor="w", stretch=True)
         tv.pack(fill="x", pady=(6, 0))
+        self._nvme_tags(tv)
         self.tv_nvme = tv
         self.nvme_tab = None
         # 預設關閉：不 pack nvme_box
+
+    def _nvme_auto_build(self, box):
+        """上電後自動 rescan 認盤（選用，預設關閉；Linux 主機沒填就不能勾）。"""
+        lf = ttk.LabelFrame(box, text=" 上電後自動 rescan 認盤（選用）", padding=6)
+        lf.pack(fill="x", pady=(6, 0))
+        r1 = ttk.Frame(lf)
+        r1.pack(fill="x")
+        self.cb_nvme_auto = ttk.Checkbutton(r1, text="上電後自動 rescan 認盤", variable=self._bv("nvme_auto", False),
+                                            command=self._nvme_auto_changed)
+        self.cb_nvme_auto.pack(side="left")
+        for lab, key, d, w, unit in (("　等", "nvme_settle", "3", 4, "s（上電穩定）"), ("　逾時", "nvme_timeout", "15", 4, "s"),
+                                     ("　重試", "nvme_retries", "2", 3, "次")):
+            ttk.Label(r1, text=lab).pack(side="left")
+            ttk.Entry(r1, textvariable=self._sv(key, d), width=w).pack(side="left", padx=2)
+            ttk.Label(r1, text=unit).pack(side="left")
+        self.v_nvme_auto_hint = tk.StringVar(self, value="")
+        ttk.Label(r1, textvariable=self.v_nvme_auto_hint, style="U.Muted.TLabel").pack(side="left", padx=10)
+        r2 = ttk.Frame(lf)
+        r2.pack(fill="x", pady=(4, 0))
+        ttk.Label(r2, text="預期 link").pack(side="left")
+        cb = ttk.Combobox(r2, textvariable=self._sv("nvme_expect", ""), width=10,
+                          values=["", "Gen5 x4", "Gen4 x4", "Gen3 x4", "Gen4 x2", "Gen3 x2"])
+        cb.pack(side="left", padx=4)
+        ttk.Label(r2, text="（空白 = 以第一次「認盤 OK」為基準；低於預期 = 降速／降寬）", style="U.Muted.TLabel").pack(side="left")
+        r3 = ttk.Frame(lf)
+        r3.pack(fill="x", pady=(4, 0))
+        ttk.Checkbutton(r3, text="掉盤時停止連續擷取（保留波形；N6705 輸出維持不關）",
+                        variable=self._bv("nvme_stop_drop", False)).pack(side="left")
+        ttk.Checkbutton(r3, text="rescan 前先 remove 舊裝置（較抓得到掉盤；Linux 系統碟勿用）",
+                        variable=self._bv("nvme_remove", False)).pack(side="left", padx=14)
+        self.v["nvme_host"].trace_add("write", lambda *_: self._nvme_auto_enable())
+        self._nvme_auto_enable()
+
+    def _nvme_auto_enable(self):
+        """Linux 主機沒填 → 自動 rescan 不能勾（並取消勾選）。"""
+        cb = getattr(self, "cb_nvme_auto", None)
+        if cb is None:
+            return
+        ok = bool(self.v["nvme_host"].get().strip())
+        cb.configure(state="normal" if ok else "disabled")
+        if not ok and self.v["nvme_auto"].get():
+            self.v["nvme_auto"].set(False)
+        self.v_nvme_auto_hint.set("" if ok else "← 先填 Linux 主機（上方「主機」）才能啟用")
+        self._nvme_auto_changed()
+
+    def _nvme_auto_changed(self):
+        if not hasattr(self, "v_nvme_auto_hint"):
+            return
+        if self.v["nvme_host"].get().strip():
+            self.v_nvme_auto_hint.set("已啟用：ARB／上電擷取後背景 rescan" if self.v["nvme_auto"].get() else "")
+
+    def _nvme_tags(self, tv):
+        tv.tag_configure("WARN", background="#fff8c5", foreground="#7d4e00")
+        tv.tag_configure("FAIL", background="#ffebe9", foreground="#cf222e")
+        tv.tag_configure("PASS", background="#dafbe1", foreground="#1a7f37")
 
     def _nvme_toggle(self):
         on = bool(self.v["nvme_on"].get())
@@ -2029,7 +2086,7 @@ class WaveSaverUI(tk.Tk):
             return
         from . import nvmehost as NH
         pf = self._right_card("nvme", "NVMe 認碟", default_open=True, weight=1.0)
-        ttk.Label(pf, text="ARB 擷取後（或按 ↻ 立刻 rescan）列出每顆 NVMe。示範模式為模擬資料。",
+        ttk.Label(pf, text="上電後自動 rescan（需勾選）或按 ↻ 立刻 rescan 後列出每顆 NVMe。示範模式為模擬資料。",
                   style="U.Muted.TLabel").pack(anchor="w")
         cols = NH.COLS
         tv = ttk.Treeview(pf, columns=cols, show="headings", height=8)
@@ -2037,6 +2094,7 @@ class WaveSaverUI(tk.Tk):
             tv.heading(c, text=NH.COL_ZH[c])
             tv.column(c, width=120 if c != "capacity" else 200, anchor="w", stretch=True)
         tv.pack(fill="both", expand=True, pady=(4, 0))
+        self._nvme_tags(tv)
         self.tv_nvme_tab = tv
         self.nvme_tab = pf
 
@@ -2058,20 +2116,37 @@ class WaveSaverUI(tk.Tk):
         self.tv_nvme_tab = None
 
     def _nvme_fill(self, drives):
-        rows = drives if isinstance(drives, list) else []
+        """drives = list（手動 rescan）／{"error":..}／自動 rescan 結果 dict（有 "result" 與 "drives"）。"""
         from . import nvmehost as NH
+        res = drives if isinstance(drives, dict) and "result" in drives else None
+        rows = (res.get("drives") or []) if res else drives if isinstance(drives, list) else []
+        lvl = ""
+        if res:
+            lvl = NH._result_line(res)[2]
         for tv in (getattr(self, "tv_nvme", None), getattr(self, "tv_nvme_tab", None)):
             if tv is None:
                 continue
             tv.delete(*tv.get_children())
             for d in rows:
-                tv.insert("", "end", values=tuple(d.get(k, "") or "—" for k in NH.COLS))
+                tv.insert("", "end", values=tuple(d.get(k, "") or "—" for k in NH.COLS), tags=(lvl,) if lvl else ())
         err = drives.get("error") if isinstance(drives, dict) else None
-        if err:
+        if res:
+            self._nvme_line_set(result=res)
+        elif err:
             self.log(f"⚠ NVMe：{err}")
             self._nvme_line_set(error=err)
         else:
             self._nvme_line_set(drives=rows)
+
+    @staticmethod
+    def _nvme_res_text(res):
+        """存檔清單／狀態列的一行：認盤 OK Gen5 x4 ／ 掉盤 ／ 降速 …"""
+        if not isinstance(res, dict) or "result" not in res:
+            return ""
+        t = f"認盤 {res['result']}" if res["result"] == "OK" else res["result"]
+        return f"{t}　找到 {res.get('found', 0)} 顆　link {res.get('link') or '—'}" + \
+            (f"（基準 {res['baseline']}）" if res.get("baseline") else "") + \
+            (f"　{res['detail']}" if res.get("detail") and res["result"] != "OK" else "")
 
     def _nvme_now(self):
         if not self.v["nvme_on"].get():
@@ -2308,7 +2383,12 @@ class WaveSaverUI(tk.Tk):
                 port = 22
             nvme = {"on": True, "sim": bool(self.demo), "host": self.v["nvme_host"].get().strip(),
                     "port": port, "user": self.v["nvme_user"].get().strip() or "root",
-                    "password": self.v["nvme_pw"].get(), "wait_s": wait}
+                    "password": self.v["nvme_pw"].get(), "wait_s": wait,
+                    "auto": bool(self.v["nvme_auto"].get() and self.v["nvme_host"].get().strip()),
+                    "settle_s": self.v["nvme_settle"].get(), "timeout_s": self.v["nvme_timeout"].get(),
+                    "retries": self.v["nvme_retries"].get(), "expect": self.v["nvme_expect"].get().strip(),
+                    "stop_on_drop": bool(self.v["nvme_stop_drop"].get()), "remove_first": bool(self.v["nvme_remove"].get()),
+                    "fail_rate": getattr(self, "_nvme_fail_rate", 0.0), "sim_seq": getattr(self, "_nvme_sim_seq", "")}
         return dict(count=n, trig_timeout_s=to, base=base, prefix=self.v["prefix"].get().strip(), chans=chans,
                     fmt={k: self.v[f"fmt_{k}"].get() for k in ("png", "trc", "csv", "npz", "pm")}, pm=pm,
                     rails=self._rails_from_ui(), seq_on=self.v["seq_save"].get(), legend=self._legend(),
@@ -2365,7 +2445,7 @@ class WaveSaverUI(tk.Tk):
             self.cap.stop()
             self.log("■ 停止（等這一次結束）")
 
-    STATE_TXT = {"arb": "N6705 ARB 啟動", "arming": "arm 中（輔 → 主）", "waiting": "已 arm，等觸發", "reading": "讀取 / 存檔中", "paused": "⏸ 暫停"}
+    STATE_TXT = {"nvme": "等 Linux rescan 認盤", "arb": "N6705 ARB 啟動", "arming": "arm 中（輔 → 主）", "waiting": "已 arm，等觸發", "reading": "讀取 / 存檔中", "paused": "⏸ 暫停"}
 
     def _prog_text(self, n, N, state="", msg=""):
         cnt = f"{n} / {N}" if N > 0 else f"{n} 次（直到停止）"
@@ -2385,6 +2465,8 @@ class WaveSaverUI(tk.Tk):
                 self.pb.configure(value=d["seq"])
             self.v_prog.set(self._prog_text(d["seq"], N, "未觸發"))
             self.saved_txt.insert("end", f"#{d['seq']}  未觸發（{d.get('arb', '')}）：{d.get('msg', '')}\n")
+            if d.get("nvme") is not None:
+                self.saved_txt.insert("end", f"    NVMe：{self._nvme_res_text(d['nvme'])}\n")
             self.saved_txt.see("end")
             if d.get("nvme") is not None:
                 self._nvme_fill(d["nvme"])
@@ -2420,9 +2502,14 @@ class WaveSaverUI(tk.Tk):
                 tv.insert("", "end", values=(r["model"], f"P{r['p']}", r["label"], f6(r["scope"]), f6(r["pc"]),
                                              "" if r["pct"] is None else f"{r['pct']:.2f}", r["ok"]))
             self.saved_txt.insert("end", f"#{d['seq']}  {d['time']}  {d['folder']}\n" +
+                                  (f"    NVMe：{self._nvme_res_text(d['nvme'])}\n" if d.get("nvme") is not None else "") +
                                   "".join(f"    {os.path.basename(p)}\n" for p in d["files"]))
             self.saved_txt.see("end")
             self.last_saved = d["files"]
+        elif kind == "nvme_drop":
+            self._drop_seq = d["seq"]
+            self.v_status.set(f"■ 掉盤，已停止擷取（第 {d['seq']} 次）— 波形已保留；N6705 輸出未關")
+            self._nvme_fill(d["nvme"])
         elif kind in ("finished", "error"):
             self.pb.stop()
             self.btn_go.configure(state="normal")
@@ -2432,7 +2519,11 @@ class WaveSaverUI(tk.Tk):
             if kind == "finished":
                 gaps = d.get("gaps") or []
                 self.v_prog.set(self._prog_text(d["n"], N, "完成") + (f"（斷線空檔 {len(gaps)} 次）" if gaps else ""))
-                self.v_status.set(f"擷取完成 {d['n']}{'' if N <= 0 else f' / {N}'} 次 → {d['dir']}")
+                if getattr(self, "_drop_seq", None):
+                    self.v_status.set(f"■ 掉盤停止：第 {self._drop_seq} 次掉盤，共完成 {d['n']} 次 → {d['dir']}")
+                    self._drop_seq = None
+                else:
+                    self.v_status.set(f"擷取完成 {d['n']}{'' if N <= 0 else f' / {N}'} 次 → {d['dir']}")
             else:
                 self.v_status.set(f"✗ 擷取停止：{d.get('msg', '')}")
 
@@ -2645,6 +2736,10 @@ def main(argv=None):
     ap.add_argument("--form", default="", help="（測試／截圖）DUT 規格 U2 / M2")
     ap.add_argument("--profile", default="", help="（測試／截圖）電源設計表名稱")
     ap.add_argument("--nvme", action="store_true", help="（測試／截圖）啟用 Linux NVMe rescan 並立刻認碟")
+    ap.add_argument("--nvme-auto", action="store_true", help="（測試／截圖）啟用 Linux NVMe 並勾選「上電後自動 rescan 認盤」")
+    ap.add_argument("--nvme-fail-rate", type=float, default=0.0, help="（示範）自動 rescan 出狀況的機率 0–1：掉盤／晚到／降速／降寬／SMART")
+    ap.add_argument("--nvme-sim-seq", default="", help="（示範）自動 rescan 的情境依序循環：ok,drop,late,down_speed,down_width,smart")
+    ap.add_argument("--nvme-stop-on-drop", action="store_true", help="（測試／截圖）勾選「掉盤時停止連續擷取」")
     a = ap.parse_args(argv)
     # 截圖時用暫時版面檔，避免寫進使用者的 ui_layout.json
     layout = a.layout or ("-" if a.shot else "")
@@ -2664,6 +2759,9 @@ def main(argv=None):
         app._want_form = key
     if a.profile:
         app._want_profile = a.profile.strip()
+    if a.nvme_auto or a.nvme_fail_rate or a.nvme_sim_seq:
+        a.nvme = True
+    app._nvme_fail_rate, app._nvme_sim_seq = a.nvme_fail_rate, a.nvme_sim_seq
     if a.nvme:
         def _en_nvme():
             if "nvme_on" in app.v:
@@ -2672,6 +2770,11 @@ def main(argv=None):
                     app.v["nvme_host"].set(DEMO_HOST)
                 app.v["nvme_on"].set(True)
                 app._nvme_toggle()
+                if a.nvme_auto or a.nvme_fail_rate or a.nvme_sim_seq:
+                    app.v["nvme_auto"].set(True)
+                    app._nvme_auto_changed()
+                if a.nvme_stop_on_drop:
+                    app.v["nvme_stop_drop"].set(True)
         app.after(200, _en_nvme)
     if a.fold or a.unfold:
         app.after(200, lambda: app._apply_fold(a.fold, a.unfold))

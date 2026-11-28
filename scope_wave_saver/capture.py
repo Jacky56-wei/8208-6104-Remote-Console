@@ -13,7 +13,8 @@
      → 等主觸發（逾時 = ARB 長度 + 1 s；沒觸發 = DUT 沒掉電 / 觸發條件沒成立 → summary 記「未觸發」、換下一個值）
      停止 / 錯誤 → N6705 安全中止（ABOR:TRAN → OUTP OFF，或維持最後電壓）
   7b. 突波／雜訊（noise.py：過衝、欠衝、漣波 Vpp，PC 算）→ 突波雜訊.csv／.png、summary.csv 欄位
-  8. summary.csv 加一列（序號、時間、上電 / 下電、輔有沒有觸發、時序判定、順序、每條 rail 延遲與 slew rate、每個 P 值）
+  7c. 上電後自動 NVMe rescan（選用，nvmecheck.py 背景執行）→ 判定寫入 summary.csv、info.json、nvme_check.log
+  8. summary.csv 加一列（序號、時間、上電 / 下電、輔有沒有觸發、時序判定、順序、每條 rail 延遲與 slew rate、突波／雜訊、NVMe 判定、每個 P 值）
 資料夾：<存到>\\<前綴>_<日期時間>_連續\\0001_210012\\0001_畫面_上下.png …、summary.csv 在 _連續 資料夾。
 """
 from __future__ import annotations
@@ -28,6 +29,8 @@ import time
 import numpy as np
 
 from . import composite as CP
+from . import nvmecheck as NV
+from . import nvmehost as NH
 from . import pmeas as PM
 from . import noise as NZ
 from . import sequencing as SQ
@@ -138,6 +141,9 @@ class Capture:
         self._nz_last = []
         self._arb_txt, self._arb_info = "", None
         self._pending = []
+        self._nv = None                        # nvmecheck.AutoRescan（上電後自動 rescan 認盤，選用）
+        self._nvme_last = None
+        self._hold_output = False              # 掉盤停止：N6705 只停 ARB、不關輸出
 
     # ---------------------------------------------------------------- 控制
     def start(self):
@@ -159,6 +165,12 @@ class Capture:
         self.run_dir = os.path.join(c["base"], "_".join(x for x in (c.get("prefix", ""), stamp) if x)
                                     + ("_連續" if n_tot != 1 else ""))
         os.makedirs(self.run_dir, exist_ok=True)
+        self._nv = NV.AutoRescan(c.get("nvme"), run_dir_fn=lambda: self.run_dir, log=self.log, stop_evt=self.stop_evt)
+        if self._nv.enabled:
+            n = self._nv.n
+            self.log(f"Linux 自動 rescan 認盤：開（上電後等 {n['settle_s']:g} s、逾時 {n['timeout_s']:g} s、重試 {n['retries']} 次"
+                     + (f"、預期 {n['expect']}" if n.get('expect') else "、link 以第一次 OK 為基準")
+                     + ("、掉盤時停止擷取" if n.get('stop_on_drop') else "") + "）")
         self.log(f"▶ 開始擷取：{'一直到 ■ 停止' if n_tot <= 0 else f'{n_tot} 次'} → {self.run_dir}")
         seq = 1
         try:
@@ -197,7 +209,8 @@ class Capture:
             except Exception:  # noqa: BLE001
                 pass
             if self._arb_on():
-                self._arb_safe("停止" if self.stop_evt.is_set() else "結束")
+                self._arb_safe("掉盤停止" if self._hold_output else "停止" if self.stop_evt.is_set() else "結束",
+                               hold=self._hold_output)
             for ln in self.links.values():
                 try:
                     if ln.up:
@@ -215,13 +228,16 @@ class Capture:
     def _arb_on(self):
         return self.psu is not None and bool((self.cfg.get("arb") or {}).get("chans"))
 
-    def _arb_safe(self, why):
+    def _arb_safe(self, why, hold=False):
         a = self.cfg["arb"]
         chans = [x["ch"] for x in a["chans"]]
         keep = {x["ch"]: x["keep_v"] for x in a["chans"] if a.get("end") == "keep" and x.get("keep_v") is not None}
         from . import n6705 as N
         try:
-            if self.psu.up:
+            if self.psu.up and hold:
+                self.psu.call(lambda d: N.abort(d, chans, output_off=False))
+                self.log(f"N6705 停 ARB（{why}）：ABOR:TRAN，輸出維持不關（CH {chans}）— 保留現場，請手動確認／關閉輸出")
+            elif self.psu.up:
                 self.psu.call(lambda d: N.abort(d, chans, output_off=True, keep=keep))
                 self.log(f"N6705 安全中止（{why}）：ABOR:TRAN → " + ("維持電壓 " + "、".join(f"CH{k} {v:g} V" for k, v in keep.items())
                                                                   if keep else "OUTP OFF") + f"（CH {chans}）")
@@ -289,28 +305,38 @@ class Capture:
         for cmd in ST.trigger_cmds(ch, level, slope):
             link.w(cmd)
 
-    def _nvme_after(self, seq):
-        """選用：ARB 後 Linux PCIe rescan ＋ 列舉 NVMe。未啟用 → None（不連線、不 import paramiko）"""
-        ncfg = self.cfg.get("nvme") or {}
-        if not ncfg.get("on"):
+    ARB_PHASE = {"RAMP": "ARB Ramp 上電後", "BROWNOUT": "Brownout 恢復後", "ONOFFON": "ON-OFF-ON 的 ON 之後"}
+
+    def _nvme_kick(self, seq, phase, delay_s):
+        """上電事件：開背景執行緒做「等 settle → rescan → 判定」。沒啟用 → 什麼都不做（不連線、不 import paramiko）。"""
+        if self._nv is None or not self._nv.enabled:
+            return
+        if self._nv.kick(seq, phase, delay_s):
+            self.log(f"Linux 自動 rescan（第 {seq} 次，{phase}）：{delay_s:.1f} s 後在背景開始")
+
+    def _nvme_collect(self, seq, prog=None):
+        """等這一次的背景認盤結果 → 判定 dict（含 drives）；沒有做 → None。掉盤 + 勾「停止」→ 停止擷取、留住波形。"""
+        self._nvme_last = None
+        if self._nv is None or not self._nv.pending(seq):
             return None
-        from . import nvmehost as NH
-        try:
-            h = NH.connect(ncfg.get("host") or "127.0.0.1", port=ncfg.get("port") or 22,
-                           user=ncfg.get("user") or "root", password=ncfg.get("password") or "",
-                           sim=bool(ncfg.get("sim", True)))
-            rows, note = NH.rescan_and_list(h, wait_s=float(ncfg.get("wait_s") or 2))
-            try:
-                h.close()
-            except Exception:  # noqa: BLE001
-                pass
-            self.log(f"Linux NVMe rescan（第 {seq} 次）：{note}")
-            for d in rows:
-                self.log("  " + "　".join(f"{NH.COL_ZH[k]} {d.get(k) or '—'}" for k in NH.COLS))
-            return rows
-        except Exception as e:  # noqa: BLE001
-            self.log(f"⚠ Linux NVMe rescan 失敗（第 {seq} 次）：{e}")
-            return {"error": str(e)}
+        if prog:
+            prog("nvme", msg="等 Linux rescan 認盤")
+        res = self._nv.wait(seq)
+        self._nvme_last = res
+        if res is None:
+            return None
+        lvl = "✓" if res["result"] == NV.OK else "⚠"
+        self.log(f"{lvl} Linux 認盤（第 {seq} 次，{res.get('phase', '')}）：{res['result']}　找到 {res['found']} 顆"
+                 f"　link {res.get('link') or '—'}" + (f"（基準 {res['baseline']}）" if res.get("baseline") else "")
+                 + (f"　{res['detail']}" if res.get("detail") else "") + (f"　rescan {res['attempts']} 次" if res.get("attempts", 1) > 1 else ""))
+        for d in res.get("drives") or []:
+            self.log("  " + "　".join(f"{NH.COL_ZH[k]} {d.get(k) or '—'}" for k in NH.COLS))
+        if res["result"] == NV.DROP and self._nv.n.get("stop_on_drop") and not self.stop_evt.is_set():
+            self._hold_output = True
+            self.log(f"■ 掉盤 → 停止連續擷取（第 {seq} 次的波形與檔案已保留；N6705 輸出維持不關）")
+            self.emit("nvme_drop", {"seq": seq, "nvme": res})
+            self.stop_evt.set()
+        return res
 
     def once(self, seq, n_tot=0):
         c = self.cfg
@@ -331,6 +357,8 @@ class Capture:
             prog("arb", msg="已 arm（輔 → 主）→ N6705 ARB 啟動")
             arb_info, dur = self._arb_go(seq)
             tmo = dur + 1.0
+            self._nvme_kick(seq, self.ARB_PHASE.get(c["arb"]["chans"][0].get("tpl"), "ARB 結束後"),
+                            dur + (self._nv.n["settle_s"] if self._nv else 0.0))
         prog("waiting", msg="已 arm（輔 → 主），等觸發" + (f"（ARB {self._arb_txt}）" if arb_info else ""))
         if not wait_trig(ms, tmo, self.stop_evt):
             raise TriggerTimeout(f"等主觸發逾時 {tmo:g} s" + ("（ARB 跑完主都沒觸發）" if arb_info else ""))
@@ -435,15 +463,19 @@ class Capture:
                 self.log(f"⚠ 第 {seq} 次突波／雜訊量測失敗：{type(e).__name__}: {e}")
                 nz_rows = []
         self._nz_last = nz_rows
-        nvme_rows = self._nvme_after(seq) if self._arb_on() else None
+        # ---- 上電後自動 NVMe rescan（選用；背景執行，等結果再寫 summary）
+        if not self._arb_on() and SQ.direction_of(sq_rows) == "up":
+            self._nvme_kick(seq, "上電擷取後", max(self._nv.n["settle_s"] - (_dt.datetime.now() - t_trig).total_seconds(), 0.0)
+                            if self._nv else 0.0)
+        nvme_res = self._nvme_collect(seq, prog)
         info = {"seq": seq, "time": t_trig.isoformat(timespec="milliseconds"), "slave_triggered": s_ok,
                 "idn": idn, "trig": c.get("trig_text", ""), "gap_before": self._gap_note,
                 "channels": {m: c["chans"][m] for m in c["chans"]}, "sequencing_verdict": verdict}
         if arb_info:
             info["arb"] = arb_info
-        if nvme_rows is not None:
-            info["nvme"] = nvme_rows if isinstance(nvme_rows, list) else nvme_rows
-        self._nvme_last = nvme_rows
+        if nvme_res is not None:
+            info["nvme"] = {k: v for k, v in nvme_res.items() if k != "drives"}
+            info["nvme"]["drives"] = nvme_res.get("drives", [])
         p = os.path.join(folder, f"{pre}info.json")
         with open(p, "w", encoding="utf-8") as f:
             json.dump(info, f, ensure_ascii=False, indent=1)
@@ -468,8 +500,7 @@ class Capture:
         nz_cols = (list(NZ.NOISE_CSV) + NZ.summary_col_names(getattr(self, "_nz_last", None))) \
             if (self.cfg.get("noise") or {}).get("on") else []
         if self._sum_cols is None:
-            nvme_cols = ["NVMe 數", "NVMe 裝置", "NVMe 型號", "NVMe 序號", "NVMe 容量", "NVMe 韌體", "NVMe BDF", "NVMe Link"] \
-                if (self.cfg.get("nvme") or {}).get("on") else []
+            nvme_cols = self._nvme_col_names()
             self._sum_cols = ["序號", "觸發時間", "方向", "輔觸發", "時序判定", "順序", "檔案數", "資料夾", "備註"] + \
                 list(SPEC_CSV) + \
                 (["ARB 通道", "ARB 範本", "ARB 掃描值", "ARB 參數"] if self._arb_on() else []) + nvme_cols + rail_cols + nz_cols + pm_cols
@@ -519,15 +550,19 @@ class Capture:
                 "ARB 範本": "；".join(x["template_name"] for x in chs),
                 "ARB 掃描值": "；".join(f"CH{x['ch']} {x.get('sweep', '')}" for x in chs if x.get("sweep")), "ARB 參數": par}
 
+    NVME_BASE_COLS = ["NVMe 數", "NVMe 裝置", "NVMe 型號", "NVMe 序號", "NVMe 容量", "NVMe 韌體", "NVMe BDF", "NVMe Link"]
+
+    def _nvme_col_names(self):
+        """summary.csv 的 NVMe 欄：啟用自動 rescan 才有（NVMe 數 = 認到幾顆）。"""
+        return (self.NVME_BASE_COLS + list(NV.CSV_COLS)) if (self._nv is not None and self._nv.enabled) else []
+
     def _nvme_cols(self):
-        from . import nvmehost as NH
-        rows = getattr(self, "_nvme_last", None)
-        if isinstance(rows, list):
-            return NH.rows_for_csv(rows)
-        if isinstance(rows, dict) and rows.get("error"):
-            return {"NVMe 數": "", "NVMe 裝置": "", "NVMe 型號": "", "NVMe 序號": "", "NVMe 容量": "",
-                    "NVMe 韌體": "", "NVMe BDF": "", "NVMe Link": "", "備註": (rows.get("error") or "")}
-        return {}
+        res = getattr(self, "_nvme_last", None)
+        if not isinstance(res, dict):
+            return {}
+        d = NH.rows_for_csv(res.get("drives") or [])
+        d.update(NV.csv_cols(res))
+        return d
 
     def _summary_miss(self, seq, msg):
         """ARB 跑完主沒觸發：summary 一列（沒有檔案）。欄位還沒定（第一次就沒觸發）→ 先暫存，等第一個有資料的一列一起寫"""
@@ -536,7 +571,7 @@ class Capture:
         d.update(self._arb_cols())
         d.update(self._spec_cols(None, [], []))
         if self._arb_on():
-            self._nvme_last = self._nvme_after(seq)
+            self._nvme_collect(seq)
             d.update(self._nvme_cols())
         self._gap_note = ""
         self._pending.append(d)
@@ -550,8 +585,7 @@ class Capture:
         if self._sum_cols is None:
             if not final:
                 return
-            nvme_cols = ["NVMe 數", "NVMe 裝置", "NVMe 型號", "NVMe 序號", "NVMe 容量", "NVMe 韌體", "NVMe BDF", "NVMe Link"] \
-                if (self.cfg.get("nvme") or {}).get("on") else []
+            nvme_cols = self._nvme_col_names()
             nz_cols = list(NZ.NOISE_CSV) if (self.cfg.get("noise") or {}).get("on") else []
             self._sum_cols = ["序號", "觸發時間", "方向", "輔觸發", "時序判定", "順序", "檔案數", "資料夾", "備註"] + \
                 list(SPEC_CSV) + ["ARB 通道", "ARB 範本", "ARB 掃描值", "ARB 參數"] + nvme_cols + nz_cols

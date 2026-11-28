@@ -34,6 +34,7 @@ flowchart TB
   end
 
   subgraph ssh [選用 Linux NVMe]
+    NVC["nvmecheck.py　上電後自動認盤＋判定"]
     NVME["nvmehost.py"]
     PK["paramiko（僅實機 SSH 才載入）"]
     HOST["Linux 主機　nvme list／rescan"]
@@ -50,7 +51,7 @@ flowchart TB
   end
 
   subgraph out [輸出]
-    FILES["畫面 PNG、.trc、CSV、NPZ<br/>時序 CSV＋PNG、pmeas.csv<br/>突波雜訊 CSV＋PNG<br/>info.json、summary.csv、log"]
+    FILES["畫面 PNG、.trc、CSV、NPZ<br/>時序 CSV＋PNG、pmeas.csv<br/>突波雜訊 CSV＋PNG、nvme_check.log<br/>info.json、summary.csv、log"]
   end
 
   U2["Autotest_tool u2core<br/>（U2_TOOL_DIR）"]
@@ -61,6 +62,7 @@ flowchart TB
   GUI --> TPL
   GUI --> LNK
   GUI --> NVME
+  CAP --> NVC --> NVME
   CAP --> LNK
   CAP --> TPL
   TPL --> N67
@@ -84,7 +86,7 @@ flowchart TB
   CAP --> FILES
 ```
 
-資料流摘要：GUI 透過 `link.py` 以 pyvisa 對兩台示波器與 N6705 下指令；擷取流程在 `capture.py`（先輔 arm、再主 arm，必要時先下 ARB 再等觸發）。讀回的波形交給 `sequencing.py`／`pmeas.py`／`noise.py`／`speccmp.py` 在 PC 計算，畫面由 `composite.py` 上下接合。Linux NVMe 是選用路徑，未勾選時不連線、也**不 import paramiko**。版型與電源設計表優先使用 Autotest_tool 的 `u2core`（`U2_TOOL_DIR`）。
+資料流摘要：GUI 透過 `link.py` 以 pyvisa 對兩台示波器與 N6705 下指令；擷取流程在 `capture.py`（先輔 arm、再主 arm，必要時先下 ARB 再等觸發）。讀回的波形交給 `sequencing.py`／`pmeas.py`／`noise.py`／`speccmp.py` 在 PC 計算，畫面由 `composite.py` 上下接合。Linux NVMe 是選用路徑，未勾選時不連線、也**不 import paramiko**；「上電後自動 rescan」由 `capture.py` 在上電事件後開背景執行緒交給 `nvmecheck.py` 判定，不卡畫面。版型與電源設計表優先使用 Autotest_tool 的 `u2core`（`U2_TOOL_DIR`）。
 
 ## 儀器與通道
 
@@ -136,6 +138,18 @@ flowchart TB
 
 **Linux NVMe rescan（選用，預設關閉）** — 在 ⑧ 勾選後才展開。啟用後 ① 連線列顯示 Linux 主機（綠／灰／紅點，背景探詢與重連），① 下方一行碟機摘要，完整表在可收合的認碟卡。實機 SSH 需要另行安裝 `paramiko`（不在 `requirements.txt`，exe 也未打包）。示範模式用模擬資料。`--nvme` 可在示範裡立刻啟用。
 
+**上電後自動 rescan 認盤（選用，預設關閉）** — 在 Linux NVMe 區塊勾「上電後自動 rescan 認盤」（Linux 主機沒填就不能勾）。每次**上電事件**後在**背景執行緒**做：等 settle（預設 3 s）→ PCIe rescan（沿用 `nvmehost`：`echo 1 > /sys/bus/pci/rescan`）→ 每秒輪詢 `/dev/nvme*`（逾時預設 15 s；沒認到就再 rescan，重試預設 2 次）→ 收型號／序號／韌體／容量／PCIe 速度與寬度（`nvme list`／sysfs `current_link_*`／`lspci` LnkSta），有 nvme-cli 再讀 `nvme smart-log` 的 `critical_warning`。
+
+| 觸發時機 | 何時開始 |
+|---|---|
+| 上電擷取（方向判定為上電） | 主觸發後 settle |
+| ARB Ramp | ARB 跑完後 settle |
+| Brownout margin | ARB 跑完（恢復後）settle，含「未觸發」的那一次 |
+| Instant ON-OFF-ON | ARB 跑完（ON 階段）settle |
+
+判定：**OK**（認到、link 正常）／**掉盤**（沒認到，或比基準少顆）／**降速**、**降寬**、**降速降寬**（低於預期值）／**SMART 警告**（`critical_warning` ≠ 0）／**連線失敗**（SSH 問題，不算掉盤）。預期 link 可填 `Gen4 x4` 之類；空白 = 以**第一次 OK** 為基準，之後比基準低才算。結果會顯示在 ① 下方一行碟機摘要（綠 OK／黃 降速降寬 SMART／紅 掉盤）、認碟表、存檔清單，並寫進 `summary.csv`（`NVMe 數`、`NVMe 判定`、`NVMe 速度`、`NVMe 寬度`、`NVMe SMART`、`NVMe 嘗試`、`NVMe 說明`、`NVMe 觸發`，加上裝置／型號／序號／容量／韌體／BDF／Link）、`info.json` 與該次資料夾旁的 `nvme_check.log`。
+
+選項：**掉盤時停止連續擷取**（保留該次波形與檔案；N6705 只 `ABOR:TRAN`、**不關輸出**，現場留給你）。**rescan 前先 remove 舊裝置**（預設關，較抓得到「重新上電後沒回來」的碟，但會把該 NVMe 從 Linux 卸除，**系統碟勿用**）。沒勾自動 rescan 時，擷取不會再自動 rescan（只剩 ↻ 手動）。示範可用 `--nvme-auto`、`--nvme-fail-rate 0.2`（機率出現掉盤／晚到／降速／降寬／SMART）或 `--nvme-sim-seq ok,drop,down_speed` 指定情境。
 **⑩ 突波／雜訊量測（PC 計算，不佔示波器 P 欄位）** — 擷取（含 ARB）後，每條**電源 rail** 用存下來的波形算：
 
 | 項目 | 定義 |
@@ -166,7 +180,7 @@ flowchart TB
 
 突波／雜訊畫面：`ui_noise_main.png`（⑩ 設定 ＋ 結果表／最差 rail 波形）、`ui_noise_spec.png`（⑨ 的突波／雜訊區段）、`ui_noise_arb.png`（ARB 擷取後）、`noise_capture_突波雜訊.png`（每次擷取存的圖）。
 
-更多畫面說明見 `screenshots/`（例如 `ui_arb_RAMP.png`、`ui_folded.png`、`ui_spec_U2.png`、`ui_nvme_line.png`）。
+更多畫面說明見 `screenshots/`（例如 `ui_arb_RAMP.png`、`ui_folded.png`、`ui_spec_U2.png`、`ui_nvme_line.png`、`ui_nvme_auto_settings.png`、`ui_nvme_auto_drop_stop.png`）。
 
 ## 執行（Windows）
 
@@ -199,6 +213,10 @@ REM 或：run.bat --real
 | `--form U2\|M2` | DUT 規格 |
 | `--profile <名稱>` | 電源設計表名稱 |
 | `--nvme` | 啟用 Linux NVMe rescan（示範為模擬資料） |
+| `--nvme-auto` | 同上，並勾「上電後自動 rescan 認盤」 |
+| `--nvme-fail-rate 0.2` | 示範：自動 rescan 出狀況的機率 0–1 |
+| `--nvme-sim-seq ok,drop,…` | 示範：依序循環情境 `ok／drop／late／down_speed／down_width／smart` |
+| `--nvme-stop-on-drop` | 勾「掉盤時停止連續擷取」 |
 | `--spec-scroll 0..1` | 截圖用：⑨ 右欄判比表捲到的位置（1 = 最底，看突波／雜訊區段） |
 | `--unplug 6104B:4@3` | 示範：模擬拔 USB |
 | `--folder <資料夾>` | 存檔位置 |
@@ -213,7 +231,7 @@ REM 或：run.bat --real
 py -3 -m unittest discover -s tests
 ```
 
-目前 32 項，涵蓋規格判比、版面遷移、NVMe 示範連線列、輔機訊號列序（VIN、VBUS、IBUS、BUSPG 在前），以及突波／雜訊的量測數學（Vss、過衝／欠衝、漣波 Vpp／RMS、頻寬限制、前／後段窗口、無穩態原因）、限值優先順序與判定、設計表選填欄位、⑨ 整合與 CSV 欄位。
+目前 60 項，涵蓋規格判比、版面遷移、NVMe 示範連線列、輔機訊號列序（VIN、VBUS、IBUS、BUSPG 在前），自動認盤的判定邏輯（OK／掉盤／降速／降寬／SMART、基準與預期值、輪詢與重試、SSH 失敗、示範情境、一行摘要、remove／smart 指令），以及突波／雜訊的量測數學（Vss、過衝／欠衝、漣波 Vpp／RMS、頻寬限制、前／後段窗口、無穩態原因）、限值優先順序與判定、設計表選填欄位、⑨ 整合與 CSV 欄位。
 
 ## 打包成 exe（Windows）
 
@@ -257,7 +275,8 @@ py -3 -m PyInstaller --noconfirm --clean ScopeWaveSaver.spec
 │   ├── speccmp.py                     U.2／M.2 設計規格判比
 │   ├── noise.py                       突波／雜訊：過衝、欠衝、漣波 Vpp／RMS、限值判定、CSV／PNG
 │   ├── composite.py                   兩台 SCREEN_DUMP 上下無縫接合
-│   ├── nvmehost.py                    選用 Linux SSH NVMe rescan
+│   ├── nvmehost.py                    選用 Linux SSH NVMe rescan、認碟、SMART 讀取
+│   ├── nvmecheck.py                   上電後自動 rescan：判定（OK／掉盤／降速／降寬）、重試、背景執行
 │   ├── demo_screens.py                示範用示波器示意圖
 │   ├── demo_scale.py                  示範畫面縮放輔助
 │   ├── assets/                        示範 PLACEHOLDER 實圖
@@ -273,13 +292,14 @@ py -3 -m PyInstaller --noconfirm --clean ScopeWaveSaver.spec
 ├── tests/
 │   ├── test_speccmp.py                規格判比、版面遷移、NVMe 示範列
 │   ├── test_slave_first.py            輔機訊號列序
-│   └── test_noise.py                  突波／雜訊量測數學、限值、判定、⑨ 整合
+│   ├── test_noise.py                  突波／雜訊量測數學、限值、判定、⑨ 整合
+│   └── test_nvmecheck.py              自動認盤判定、輪詢／重試、示範情境
 ├── samples/                           示範模式範例輸出
 │   ├── 畫面_上下.png、主_8208HD_實圖.png、輔_6104B_實圖.png
 │   ├── 連續擷取_示範/                  上電＋下電各一次及 summary.csv
 │   ├── ARB_Brownout_示範/             含未觸發的淺 brownout 列
 │   └── ARB_ON-OFF-ON_示範/
-└── screenshots/                       示範模式 UI 截圖（21 張）
+└── screenshots/                       示範模式 UI 截圖（25 張）
 ```
 
 擷取過程紀錄另外寫到 `桌面\scope waveform\scope_wave_saver.log`。
@@ -289,6 +309,7 @@ py -3 -m PyInstaller --noconfirm --clean ScopeWaveSaver.spec
 - [ ] **`--real` 實機驗證**（儀器尚未接上）。示範模式已跑過連線 → 背景設定 → arm → ARB → 觸發 → 讀／存 → 時序 → 斷線重連；實機 USB VISA 流程尚未測過。
 - [ ] **Windows 最大化**：程式在 1920×1080 會設約 1920×1040 並呼叫 `state("zoomed")`，尚未在實機 Windows 確認。
 - [ ] **實機 SSH／Linux NVMe rescan**：連線列狀態、一行碟機資訊、認碟表、擷取後更新；目前只有示範模擬資料。
+- [ ] **實機驗證自動 rescan 認盤**（尚未對真實 Linux 主機跑過）：sudo 免密碼（`sudo -n tee /sys/bus/pci/rescan`）、`nvme list`／`smart-log` 輸出格式、sysfs `current_link_*` 與 `lspci` 的 link 字串、settle／逾時預設值是否夠長、「先 remove 再 rescan」在實機的行為、掉盤時是否真的認不到（而不是殘留舊節點）。
 - [ ] **讀回／寫入儀器設定**（`settings.py` 註明為草稿，尚未實機測試）。
 - [ ] **實機 SCREEN_DUMP 格線區**：`composite.GRID_FRAC` 尚未對實機 MAUI 畫面確認（自動偵測優先）。
 - [ ] **6104B P 量測實機讀回比對**：8208HD 在 Autotest_tool 已確認 Rise／Fall／Max／Min／Mean／PkPk／Delay；6104B 尚無紀錄；其餘參數依手冊，寫入後需讀回比對。

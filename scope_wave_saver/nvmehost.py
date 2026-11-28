@@ -172,7 +172,15 @@ class NvmeError(RuntimeError):
 
 
 class SimHost:
-    """示範：不連 SSH，rescan 後回傳模擬 NVMe；探詢回傳模擬主機名稱／核心。"""
+    """示範：不連 SSH，rescan 後回傳模擬 NVMe；探詢回傳模擬主機名稱／核心。
+
+    scenario（自動 rescan 示範用）：ok / drop（一直沒認到）/ late（前 2 次列舉沒有，之後出現）/
+    down_speed（Gen5→Gen3）/ down_width（x4→x2）/ smart（critical_warning=0x04）。
+    """
+
+    def __init__(self, scenario="ok"):
+        self.scenario = scenario or "ok"
+        self.polls = 0
 
     def close(self):
         pass
@@ -183,11 +191,27 @@ class SimHost:
             return 0, "demo-linux\n6.8.0-demo\nroot\n", ""
         return 0, "", ""
 
+    def sim_drives(self):
+        self.polls += 1
+        sc = self.scenario
+        if sc == "drop" or (sc == "late" and self.polls <= 2):
+            return []
+        rows = [dict(x) for x in SIM_DRIVES]
+        if sc == "down_speed":
+            rows[0]["link"] = "8GT/s x4"
+        elif sc == "down_width":
+            rows[0]["link"] = "32GT/s x2"
+        elif sc == "smart":
+            rows[0]["smart_cw"] = 4
+        else:
+            rows[0]["smart_cw"] = 0
+        return rows
 
-def connect(host, port=22, user="root", password="", key_filename="", timeout=8, sim=False):
+
+def connect(host, port=22, user="root", password="", key_filename="", timeout=8, sim=False, sim_scenario=None):
     """連 Linux 主機。sim=True → 不 import paramiko。只在實機連線時才 import paramiko。"""
     if sim:
-        return SimHost()
+        return SimHost(sim_scenario or "ok")
     try:
         import paramiko  # noqa: WPS433  延遲載入：未啟用 / 示範模式不會 import
     except ImportError as e:
@@ -219,8 +243,16 @@ def connect(host, port=22, user="root", password="", key_filename="", timeout=8,
     return _Ssh()
 
 
-def rescan(host, wait_s=2.0):
-    """PCIe rescan，然後稍等列舉。"""
+_BDF_RE = re.compile(r"^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-9a-fA-F]$")
+
+
+def rescan(host, wait_s=2.0, remove_bdfs=None):
+    """PCIe rescan，然後稍等列舉。remove_bdfs：rescan 前先把這些 BDF 從 PCIe 樹移除
+    （echo 1 > /sys/bus/pci/devices/<BDF>/remove），才抓得到「重新上電後沒回來」的碟。選用，預設不做。"""
+    if not isinstance(host, SimHost):
+        for bdf in remove_bdfs or []:
+            if _BDF_RE.match(str(bdf or "")):
+                host.run(f"echo 1 | sudo -n tee /sys/bus/pci/devices/{bdf}/remove >/dev/null", timeout=20)
     rc, out, err = host.run(RESCAN_CMD, timeout=20)
     if not isinstance(host, SimHost) and rc not in (0, None):
         raise NvmeError(f"PCIe rescan 失敗 rc={rc}：{(err or out).strip()[:200]}")
@@ -232,7 +264,7 @@ def rescan(host, wait_s=2.0):
 def list_drives(host):
     """→ list[dict]；示範主機回傳 SIM_DRIVES。"""
     if isinstance(host, SimHost):
-        return [dict(x) for x in SIM_DRIVES]
+        return host.sim_drives()
     rows = []
     rc, out, err = host.run(LIST_JSON_CMD, timeout=20)
     if rc == 0 and out.strip():
@@ -273,6 +305,43 @@ def list_drives(host):
         r.setdefault("link", "")
         r.setdefault("dev", "")
     return rows
+
+
+SMART_CMD = "nvme smart-log {dev} -o json 2>/dev/null || sudo -n nvme smart-log {dev} -o json 2>/dev/null"
+
+
+def parse_smart_cw(text):
+    """nvme smart-log（json 或文字）→ critical_warning（int）；讀不到 → None。"""
+    t = str(text or "")
+    try:
+        j = json.loads(t)
+        if isinstance(j, dict) and "critical_warning" in j:
+            return int(j["critical_warning"])
+    except Exception:  # noqa: BLE001
+        pass
+    m = re.search(r"critical_warning\s*:?\s*(0x[0-9a-fA-F]+|\d+)", t)
+    return int(m.group(1), 0) if m else None
+
+
+def attach_smart(host, drives):
+    """選用：有 nvme-cli 才讀 SMART critical_warning，放進每顆的 smart_cw（讀不到 = None，不影響判定）。"""
+    if isinstance(host, SimHost):
+        return drives
+    seen = {}
+    for d in drives:
+        m = re.match(r"/dev/(nvme\d+)", str(d.get("dev") or ""))
+        if not m:
+            d["smart_cw"] = None
+            continue
+        ctrl = "/dev/" + m.group(1)
+        if ctrl not in seen:
+            try:
+                _rc, out, _e = host.run(SMART_CMD.format(dev=ctrl), timeout=15)
+                seen[ctrl] = parse_smart_cw(out)
+            except Exception:  # noqa: BLE001
+                seen[ctrl] = None
+        d["smart_cw"] = seen[ctrl]
+    return drives
 
 
 def rescan_and_list(host, wait_s=2.0):
@@ -341,8 +410,11 @@ def drive_line(d, verdict="PASS"):
     return LINE_SEP.join(parts)
 
 
-def homepage_line(drives, error=None):
-    """主頁一行＋tooltip＋判定。多顆：前綴顆數＋第一顆，其餘放 tooltip。"""
+def homepage_line(drives, error=None, result=None):
+    """主頁一行＋tooltip＋判定（PASS / WARN / FAIL）。多顆：前綴顆數＋第一顆，其餘放 tooltip。
+    result = nvmecheck 的自動 rescan 結果 dict：一行改成「… ｜ Gen4 x4 ｜ 認盤 OK」或「掉盤 …」，附第幾次與觸發時機。"""
+    if result:
+        return _result_line(result)
     if error:
         return f"NVMe：失敗（{error}）", str(error), "FAIL"
     rows = [d for d in (drives or []) if isinstance(d, dict)]
@@ -355,6 +427,35 @@ def homepage_line(drives, error=None):
     tip = "\n".join(drive_line(d, "PASS") for d in rows)
     return shown, tip, "PASS"
 
+
+def _result_line(r):
+    res = r.get("result", "")
+    tag = f"#{r['seq']} {r.get('phase', '')}".strip() if r.get("seq") else str(r.get("phase", ""))
+    rows = [d for d in (r.get("drives") or []) if isinstance(d, dict)]
+    tries = f"，rescan {r['attempts']} 次" if (r.get("attempts") or 1) > 1 else ""
+    tip_extra = "\n".join(x for x in (
+        f"判定：{res}　{r.get('detail', '')}".strip(), f"基準 link：{r.get('baseline') or '—'}",
+        f"SMART critical_warning：{r.get('smart') or '—'}", f"{tag}{tries}") if x)
+    if res == "OK":
+        verdict = "認盤 OK"
+    elif res == "掉盤":
+        verdict = "掉盤"
+    elif res in ("降速", "降寬", "降速降寬"):
+        verdict = f"{res}（基準 {r.get('baseline') or '—'}）"
+    elif res == "SMART 警告":
+        verdict = f"SMART 警告 {r.get('smart') or ''}".strip()
+    else:
+        verdict = res or "—"
+    level = "PASS" if res == "OK" else "WARN" if res in ("降速", "降寬", "降速降寬", "SMART 警告") else "FAIL"
+    if rows:
+        main = drive_line(rows[0], verdict)
+        if len(rows) > 1:
+            main = f"{len(rows)} 顆  {main}"
+        tip = "\n".join(drive_line(d, verdict) for d in rows) + "\n" + tip_extra
+    else:
+        main = f"NVMe：{verdict}" + (f"（{r['detail']}）" if r.get("detail") and res in ("連線失敗",) else "（未認到碟）" if res == "掉盤" else "")
+        tip = tip_extra
+    return f"{main}　〔{tag}{tries}〕" if tag else main, tip, level
 
 
 def rows_for_csv(drives):
