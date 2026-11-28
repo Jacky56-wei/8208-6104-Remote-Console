@@ -7,86 +7,180 @@
 
 > **目前狀態：預設為示範模式**（模擬示波器 `SimScope` ＋ 模擬 N6705 `SimN6705`）。連續擷取、上／下電時序、USB 重連、ARB＋擷取都已在示範模式跑過；畫面上的示波器圖是 **PLACEHOLDER 示意圖**。加 `--real` 才走 USB VISA 接實機，**尚未實機測試**。
 
+> **📘 操作手冊（圖文版，給測試人員）：[docs/操作手冊.md](docs/操作手冊.md)　｜　[PDF](docs/操作手冊.pdf)**
+> 安裝與啟動、畫面總覽（編號標註）、儀器接線、每個功能的步驟流程、輸出檔案說明與常見問題。
+
 ![主畫面（1920×1080，示範模式）](screenshots/ui_1080p.png)
 
 ![上電時序：輔機訊號 VIN／VBUS／IBUS／BUSPG 列在前](screenshots/ui_seq_powerup.png)
 
 ## 架構圖
 
+### 1. 模組與資料流
+
+箭頭＝實際的 `import`／呼叫（已對照程式碼）；虛線＝延遲載入或回呼。
+
 ```mermaid
 flowchart TB
-  subgraph ui [介面]
-    GUI["gui.py　主視窗／工具列／①–⑩"]
+  subgraph ui ["介面"]
+    GUI["gui.py　主視窗／工具列／①–⑩／指令列"]
     FOLD["foldui.py　收合／拖移／分隔條／ui_layout.json"]
   end
 
-  subgraph ctrl [流程控制]
-    CAP["capture.py　連續擷取／ARB＋擷取／存檔"]
+  subgraph ctrl ["流程控制"]
+    CAP["capture.py　連續擷取／ARB＋擷取／存檔／summary.csv"]
     SET["settings.py　讀回／寫入儀器設定"]
     TPL["arbtpl.py　Ramp／Brownout／ON-OFF-ON"]
-    LNK["link.py　VISA 連線、心跳、USB 自動重連"]
+    LNK["link.py　每台一把鎖、心跳、USB 自動重連"]
+    NVC["nvmecheck.py　上電後自動認盤＋判定（背景執行緒）"]
   end
 
-  subgraph inst [儀器]
-    VISA["pyvisa / pyvisa-py"]
-    LEC["lecroy.py<br/>MASTER WaveRunner 8208HD<br/>SLAVE HDO6104B<br/>示範：SimScope"]
-    N67["n6705.py<br/>Keysight N6705<br/>示範：SimN6705"]
+  subgraph inst ["儀器層（USB VISA）"]
+    LEC["lecroy.py　LeCroyScope／示範 SimScope"]
+    N67["n6705.py　N6705／示範 SimN6705"]
+    VISA["pyvisa／pyvisa-py"]
+    HW["8208HD 主／6104B 輔／N6705"]
   end
 
-  subgraph ssh [選用 Linux NVMe]
-    NVC["nvmecheck.py　上電後自動認盤＋判定"]
-    NVME["nvmehost.py"]
+  subgraph lnx ["選用 Linux NVMe"]
+    NVME["nvmehost.py　rescan／認碟／SMART"]
     PK["paramiko（僅實機 SSH 才載入）"]
-    HOST["Linux 主機　nvme list／rescan"]
+    HOST["Linux 主機"]
   end
 
-  subgraph ana [PC 分析]
-    RAILS["rails.py　通道名與列序"]
-    SEQ["sequencing.py　上／下電時序與 slew"]
-    PME["pmeas.py　P1–P24"]
-    SPC["speccmp.py　設計規格判比"]
-    NZ["noise.py　突波／雜訊：過衝、欠衝、漣波"]
-    BUS["busname.py　通道 bus name"]
+  subgraph ana ["PC 分析（純計算）"]
+    RAILS["rails.py　通道名／標稱／列序 SIGNAL_ORDER"]
+    BUS["busname.py　通道 Alias／Label"]
+    PME["pmeas.py　P1–P24（示波器／PC）"]
+    SEQ["sequencing.py　上下電時序／slew／Δt"]
+    NZ["noise.py　過衝／欠衝／漣波／RMS"]
+    SPC["speccmp.py　U.2／M.2 設計規格判比"]
     CMP["composite.py　上下實圖接合"]
   end
 
-  subgraph out [輸出]
-    FILES["畫面 PNG、.trc、CSV、NPZ<br/>時序 CSV＋PNG、pmeas.csv<br/>突波雜訊 CSV＋PNG、nvme_check.log<br/>info.json、summary.csv、log"]
-  end
-
-  U2["Autotest_tool u2core<br/>（U2_TOOL_DIR）"]
+  FILES["輸出：PNG／.trc／CSV／NPZ／info.json／summary.csv／nvme_check.log"]
+  U2["Autotest_tool u2core（U2_TOOL_DIR）"]
 
   GUI --- FOLD
+  GUI -->|"建立並使用"| LNK
   GUI --> CAP
   GUI --> SET
   GUI --> TPL
-  GUI --> LNK
   GUI --> NVME
-  CAP --> NVC --> NVME
+  GUI --> SEQ
+  GUI --> NZ
+  GUI --> SPC
+  GUI --> CMP
+  GUI --> PME
+  GUI --> BUS
+  LNK -->|"包住每台儀器"| LEC
+  LNK --> N67
+  LEC --> VISA
+  N67 --> VISA
+  VISA --> HW
+  N67 --> TPL
   CAP --> LNK
-  CAP --> TPL
-  TPL --> N67
-  SET --> LNK
-  LNK --> VISA
-  VISA --> LEC
-  VISA --> N67
-  NVME --> PK --> HOST
-  CAP --> RAILS
-  CAP --> SEQ
-  CAP --> PME
-  CAP --> SPC
-  CAP --> NZ
-  NZ --> SPC
   CAP --> CMP
+  CAP --> PME
+  CAP --> SEQ
+  CAP --> NZ
+  CAP --> NVC
+  CAP --> NVME
+  CAP -.->|"ARB（延遲載入）"| N67
+  CAP -.->|"套觸發（延遲載入）"| SET
+  CAP -.->|"spec_compare 回呼"| SPC
+  NVC --> NVME
+  NVME --> PK --> HOST
   SET --> BUS
   SET --> PME
+  SET --> LEC
+  LEC --> RAILS
+  SEQ --> RAILS
+  NZ --> RAILS
+  NZ <-.-> SPC
+  SPC -.-> RAILS
+  CAP --> FILES
   GUI -.-> U2
   TPL -.-> U2
   SPC -.-> U2
-  CAP --> FILES
 ```
 
-資料流摘要：GUI 透過 `link.py` 以 pyvisa 對兩台示波器與 N6705 下指令；擷取流程在 `capture.py`（先輔 arm、再主 arm，必要時先下 ARB 再等觸發）。讀回的波形交給 `sequencing.py`／`pmeas.py`／`noise.py`／`speccmp.py` 在 PC 計算，畫面由 `composite.py` 上下接合。Linux NVMe 是選用路徑，未勾選時不連線、也**不 import paramiko**；「上電後自動 rescan」由 `capture.py` 在上電事件後開背景執行緒交給 `nvmecheck.py` 判定，不卡畫面。版型與電源設計表優先使用 Autotest_tool 的 `u2core`（`U2_TOOL_DIR`）。
+資料流摘要：`gui.py` 為每台儀器建立 `link.Link`（裡面包 `LeCroyScope`／`N6705`，示範模式換成 `SimScope`／`SimN6705`），連線、對時、Auto scale 與重連都在背景。擷取流程在 `capture.py`：先輔 arm、再主 arm，ARB 時再叫 N6705 啟動，等主觸發後讀波形，交給 `pmeas`／`sequencing`／`noise` 在 PC 計算；規格判比由 GUI 以回呼（`spec_compare`）交給 `speccmp`（它會用到 `noise` 的結果）。Linux NVMe 是選用路徑，未勾選時不連線、也**不 import paramiko**；「上電後自動 rescan」由 `capture.py` 在上電事件後交給 `nvmecheck.py` 在背景執行緒判定，不卡畫面。版型與電源設計表優先使用 Autotest_tool 的 `u2core`（`U2_TOOL_DIR`），沒有時改用隨附 `specs/`。
+
+### 2. 一次擷取的流程（連線 → 設定 → 觸發 RSTn → 擷取 → 分析 → 認盤 → 存檔）
+
+```mermaid
+flowchart LR
+  subgraph s1 ["1 連線與設定（背景自動）"]
+    A["USB 連線<br/>link.py"] --> B["對時／Auto scale<br/>主 Aux Out → 輔 EXT"]
+    B --> C["套用觸發<br/>C8 RSTn 0.9 V<br/>斜率 Rising／Falling／Either"]
+  end
+  subgraph s2 ["2 擷取（capture.py）"]
+    D["輔先 arm、主後 arm"] --> E{"ARB？"}
+    E -->|"是"| F["N6705 下載 ARB<br/>OUTP ON → INIT:TRAN → *TRG"]
+    E -->|"否"| G["等 DUT 上／下電"]
+    F --> H["等主 C8 觸發<br/>輔跟隨（逾時仍存主）"]
+    G --> H
+    H --> I["讀 SCREEN_DUMP<br/>＋ Cn:WAVEFORM?"]
+  end
+  subgraph s3 ["3 PC 分析"]
+    J["P 量測<br/>pmeas.py"] --> K["時序／slew／Δt<br/>sequencing.py"] --> L["突波／雜訊<br/>noise.py"]
+  end
+  subgraph s4 ["4 選用：自動認盤"]
+    N["背景：settle → rescan → 輪詢 → 判定<br/>nvmecheck.py → nvmehost.py"]
+  end
+  subgraph s5 ["5 規格判比與存檔"]
+    M["規格判比<br/>speccmp.py"] --> O["存 PNG／.trc／CSV／NPZ<br/>時序、突波雜訊、pmeas.csv、info.json<br/>summary.csv 加一列、nvme_check.log"]
+  end
+  C --> D
+  I --> J
+  K -.->|"判定為上電或 ARB"| N
+  L --> M
+  N --> M
+```
+
+### 3. 擷取時序圖（誰在什麼時候做什麼）
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as 測試人員
+  participant G as gui.py
+  participant L as link.py（每台一個 Link）
+  participant S as 6104B 輔
+  participant M as 8208HD 主
+  participant P as N6705
+  participant C as capture.py
+  participant A as 分析模組
+  participant X as nvmecheck → Linux
+  U->>G: 開程式（run.bat 或 --real）
+  G->>L: 建立 Link，背景連線
+  L->>S: 連線、對時、Auto scale
+  L->>M: 連線、對時、Auto scale、Aux Out 接輔 EXT
+  L->>P: 連線、*CLS、對時（不動輸出）
+  U->>G: 按 ▶ 擷取＋存檔 或 ⚡ ARB＋擷取
+  G->>C: start（設定、回呼）
+  loop 每一次擷取
+    C->>M: 套用觸發（C8 RSTn、0.9 V、斜率）
+    C->>S: arm SINGLE（輔先）
+    C->>M: arm SINGLE（主後）
+    opt ARB
+      C->>P: 下載 ARB、OUTP ON、INIT:TRAN、*TRG
+    end
+    M-->>C: 主觸發（INR? 輪詢）
+    S-->>C: 輔跟隨觸發（Aux Out → EXT）
+    C->>S: SCREEN_DUMP、Cn:WAVEFORM?
+    C->>M: SCREEN_DUMP、Cn:WAVEFORM?
+    C->>A: P 量測、時序與 slew、突波雜訊
+    opt 上電後自動認盤
+      C-)X: 背景：settle、rescan、輪詢、判定
+      X--)C: 結果（OK、掉盤、降速、降寬、SMART）
+    end
+    C->>A: 規格判比（spec_compare 回呼）
+    C->>C: 存 PNG、CSV、info.json，summary.csv 加一列
+    C-->>G: captured 事件，更新右欄
+  end
+```
 
 ## 儀器與通道
 
@@ -217,6 +311,7 @@ REM 或：run.bat --real
 | `--nvme-fail-rate 0.2` | 示範：自動 rescan 出狀況的機率 0–1 |
 | `--nvme-sim-seq ok,drop,…` | 示範：依序循環情境 `ok／drop／late／down_speed／down_width／smart` |
 | `--nvme-stop-on-drop` | 勾「掉盤時停止連續擷取」 |
+| `--sim-window T0,T1` | 示範／截圖：模擬波形時間窗（ms），例如 `--sim-window=-8,10`（預設 −2,8） |
 | `--spec-scroll 0..1` | 截圖用：⑨ 右欄判比表捲到的位置（1 = 最底，看突波／雜訊區段） |
 | `--unplug 6104B:4@3` | 示範：模擬拔 USB |
 | `--folder <資料夾>` | 存檔位置 |
@@ -294,6 +389,13 @@ py -3 -m PyInstaller --noconfirm --clean ScopeWaveSaver.spec
 │   ├── test_slave_first.py            輔機訊號列序
 │   ├── test_noise.py                  突波／雜訊量測數學、限值、判定、⑨ 整合
 │   └── test_nvmecheck.py              自動認盤判定、輪詢／重試、示範情境
+├── docs/                              文件
+│   ├── 操作手冊.md                    圖文版操作手冊（繁體中文，給測試人員）
+│   ├── 操作手冊.pdf                   同上的 PDF（含圖與中文字型）
+│   ├── img/                           手冊用圖（28 張：編號標註的示範模式截圖、接線圖）
+│   ├── make_images.py                 用示範模式在 xvfb 重產截圖並標註（Pillow）
+│   ├── _geom.py                       截圖時順便倒出元件座標，供標註對位
+│   └── build_pdf.py                   Markdown → HTML → Chrome 無頭列印成 PDF（mermaid 先轉 PNG）
 ├── samples/                           示範模式範例輸出
 │   ├── 畫面_上下.png、主_8208HD_實圖.png、輔_6104B_實圖.png
 │   ├── 連續擷取_示範/                  上電＋下電各一次及 summary.csv
@@ -307,6 +409,8 @@ py -3 -m PyInstaller --noconfirm --clean ScopeWaveSaver.spec
 ## 待辦事項
 
 - [ ] **`--real` 實機驗證**（儀器尚未接上）。示範模式已跑過連線 → 背景設定 → arm → ARB → 觸發 → 讀／存 → 時序 → 斷線重連；實機 USB VISA 流程尚未測過。
+- [ ] **工具列三個保留按鈕尚未接功能**：「⟳ 實圖即時更新」、「結果資料夾」、「匯出 CSV／報告」（`gui.py` 把後兩者的處理函式設成空函式；右欄 R1 的「更新／即時更新」已可用，每次擷取已自動存 CSV）。操作手冊 Q14 已註明。
+- [ ] **操作手冊截圖來自示範模式**：實機畫面（真實 SCREEN_DUMP、示波器 P 值欄）接上儀器後要再補拍；畫面改版後用 `docs/make_images.py` 重產。
 - [ ] **Windows 最大化**：程式在 1920×1080 會設約 1920×1040 並呼叫 `state("zoomed")`，尚未在實機 Windows 確認。
 - [ ] **實機 SSH／Linux NVMe rescan**：連線列狀態、一行碟機資訊、認碟表、擷取後更新；目前只有示範模擬資料。
 - [ ] **實機驗證自動 rescan 認盤**（尚未對真實 Linux 主機跑過）：sudo 免密碼（`sudo -n tee /sys/bus/pci/rescan`）、`nvme list`／`smart-log` 輸出格式、sysfs `current_link_*` 與 `lspci` 的 link 字串、settle／逾時預設值是否夠長、「先 remove 再 rescan」在實機的行為、掉盤時是否真的認不到（而不是殘留舊節點）。

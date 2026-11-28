@@ -6,3 +6,5 @@ portable/
 dist/
 build/
 .venv/
+/docs/_raw/
+/docs/_build/
