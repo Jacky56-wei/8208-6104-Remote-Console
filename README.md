@@ -16,7 +16,7 @@
 ```mermaid
 flowchart TB
   subgraph ui [介面]
-    GUI["gui.py　主視窗／工具列／①–⑨"]
+    GUI["gui.py　主視窗／工具列／①–⑩"]
     FOLD["foldui.py　收合／拖移／分隔條／ui_layout.json"]
   end
 
@@ -45,12 +45,13 @@ flowchart TB
     SEQ["sequencing.py　上／下電時序與 slew"]
     PME["pmeas.py　P1–P24"]
     SPC["speccmp.py　設計規格判比"]
+    NZ["noise.py　突波／雜訊：過衝、欠衝、漣波"]
     BUS["busname.py　通道 bus name"]
     CMP["composite.py　上下實圖接合"]
   end
 
   subgraph out [輸出]
-    FILES["畫面 PNG、.trc、CSV、NPZ<br/>時序 CSV＋PNG、pmeas.csv<br/>info.json、summary.csv、log"]
+    FILES["畫面 PNG、.trc、CSV、NPZ<br/>時序 CSV＋PNG、pmeas.csv<br/>突波雜訊 CSV＋PNG、nvme_check.log<br/>info.json、summary.csv、log"]
   end
 
   U2["Autotest_tool u2core<br/>（U2_TOOL_DIR）"]
@@ -74,6 +75,8 @@ flowchart TB
   CAP --> SEQ
   CAP --> PME
   CAP --> SPC
+  CAP --> NZ
+  NZ --> SPC
   CAP --> CMP
   SET --> BUS
   SET --> PME
@@ -83,7 +86,7 @@ flowchart TB
   CAP --> FILES
 ```
 
-資料流摘要：GUI 透過 `link.py` 以 pyvisa 對兩台示波器與 N6705 下指令；擷取流程在 `capture.py`（先輔 arm、再主 arm，必要時先下 ARB 再等觸發）。讀回的波形交給 `sequencing.py`／`pmeas.py`／`speccmp.py` 在 PC 計算，畫面由 `composite.py` 上下接合。Linux NVMe 是選用路徑，未勾選時不連線、也**不 import paramiko**；「上電後自動 rescan」由 `capture.py` 在上電事件後開背景執行緒交給 `nvmecheck.py` 判定，不卡畫面。版型與電源設計表優先使用 Autotest_tool 的 `u2core`（`U2_TOOL_DIR`）。
+資料流摘要：GUI 透過 `link.py` 以 pyvisa 對兩台示波器與 N6705 下指令；擷取流程在 `capture.py`（先輔 arm、再主 arm，必要時先下 ARB 再等觸發）。讀回的波形交給 `sequencing.py`／`pmeas.py`／`noise.py`／`speccmp.py` 在 PC 計算，畫面由 `composite.py` 上下接合。Linux NVMe 是選用路徑，未勾選時不連線、也**不 import paramiko**；「上電後自動 rescan」由 `capture.py` 在上電事件後開背景執行緒交給 `nvmecheck.py` 判定，不卡畫面。版型與電源設計表優先使用 Autotest_tool 的 `u2core`（`U2_TOOL_DIR`）。
 
 ## 儀器與通道
 
@@ -147,10 +150,35 @@ flowchart TB
 判定：**OK**（認到、link 正常）／**掉盤**（沒認到，或比基準少顆）／**降速**、**降寬**、**降速降寬**（低於預期值）／**SMART 警告**（`critical_warning` ≠ 0）／**連線失敗**（SSH 問題，不算掉盤）。預期 link 可填 `Gen4 x4` 之類；空白 = 以**第一次 OK** 為基準，之後比基準低才算。結果會顯示在 ① 下方一行碟機摘要（綠 OK／黃 降速降寬 SMART／紅 掉盤）、認碟表、存檔清單，並寫進 `summary.csv`（`NVMe 數`、`NVMe 判定`、`NVMe 速度`、`NVMe 寬度`、`NVMe SMART`、`NVMe 嘗試`、`NVMe 說明`、`NVMe 觸發`，加上裝置／型號／序號／容量／韌體／BDF／Link）、`info.json` 與該次資料夾旁的 `nvme_check.log`。
 
 選項：**掉盤時停止連續擷取**（保留該次波形與檔案；N6705 只 `ABOR:TRAN`、**不關輸出**，現場留給你）。**rescan 前先 remove 舊裝置**（預設關，較抓得到「重新上電後沒回來」的碟，但會把該 NVMe 從 Linux 卸除，**系統碟勿用**）。沒勾自動 rescan 時，擷取不會再自動 rescan（只剩 ↻ 手動）。示範可用 `--nvme-auto`、`--nvme-fail-rate 0.2`（機率出現掉盤／晚到／降速／降寬／SMART）或 `--nvme-sim-seq ok,drop,down_speed` 指定情境。
+**⑩ 突波／雜訊量測（PC 計算，不佔示波器 P 欄位）** — 擷取（含 ARB）後，每條**電源 rail** 用存下來的波形算：
+
+| 項目 | 定義 |
+|---|---|
+| 穩態 Vss | 穩態窗口內的**中位數**（不被 ripple、單點雜訊帶偏） |
+| 過衝 | 最後一次到達穩態之後，最高點 − Vss（V 與佔 Vss 的 %） |
+| 欠衝 | 最後一次到達穩態之後，Vss − 最低點（V、%）；ARB ON-OFF-ON 先掉到 0 V 的設計動作不算欠衝 |
+| 漣波／雜訊 Vpp | 穩態窗口內**去掉線性漂移**後的 max − min（V、%），另有 RMS 雜訊 |
+| 頻寬限制（選用） | 數位低通（零相位移動平均，−3 dB ≈ 0.443／(N·dt)）：關閉／20／100／200 MHz，對 Vss、過衝／欠衝、漣波一起生效 |
+
+穩態窗口的找法：取波形後段中位數，容許帶 = max(1 %·V、3.5σ)（可調），窗口 = 最後一次跑出容許帶之後再多等「穩態等待」（預設 0.5 ms）；後段不是穩態（下電、結尾 0 V）改用前段；兩段都離標稱超過 30 % 或窗口太短 → 標「無穩態：原因」，不判。RSTn／BUSPG 不量；IBUS（電流）只記錄（過衝欄 = 峰值 − 穩態 A），不判 PASS／FAIL。受限於示波器取樣點數，高頻漣波（例如開關頻率 MHz 級）的 Vpp 會偏低，要精準量漣波請縮短時基或用示波器端量測。
+
+**限值與判定** — 每條 rail 三個限值（過衝、欠衝、漣波 Vpp，皆佔 Vss；漣波另可填 mV），任一項超過 → FAIL。來源優先順序：**使用者**（⑩ 每條 rail 欄位，或改過的全域值）＞ **設計表 JSON** 選填欄位（`ovs_pct`／`uns_pct`／`ripple_pct`／`ripple_mv`，目前隨附兩份設計表都沒有）＞ **預設**。
+
+| 預設限值（**預設／待確認**，不是正式規格） | 值 |
+|---|---|
+| 過衝 | ≤ 5 % Vss |
+| 欠衝 | ≤ 5 % Vss |
+| 漣波 Vpp | ≤ 2 % Vss |
+
+預設限值得到的 PASS／FAIL **預設不計入 ⑨ 規格總判定**（⑩ 勾選才計；使用者或設計表的限值一律計入）；沒有限值的項目標 **待填**。結果顯示在三處：⑨ 判比表的「突波／雜訊」區段、右欄「突波／雜訊量測結果」（表格 ＋ 最差 rail 波形，點列可看該 rail；淡藍 = 穩態窗口、▲ 過衝、▼ 欠衝、★ 最差）、以及每次擷取的 `突波雜訊.csv`／`突波雜訊.png` 和 `summary.csv`（每條 rail 的過衝 %、欠衝 %、漣波 Vpp ＋ 一欄「突波雜訊判定」）。列序同全工具：VIN、VBUS、IBUS，再 CORE…。
+
+示範模式的模擬波形帶 ripple、雜訊與負載暫態，讓這個功能看得到東西：DDRVPP 過衝約 7 %（FAIL）、NFIO 漣波約 2.9 %（FAIL）、其餘 PASS；示範擷取時 NFCORE 因示範 NFCORE 標稱（0.9 V）與 U.2 設計表（2.5 V）不一致而標「無穩態：標稱差太多」。
 
 **DUT 規格（最上方固定列）＋ ⑨ 設計規格判比** — U.2／U.3（VIN 12 V）或 M.2（VIN 3.3 V）與電源設計表下拉、總判定，放在 ① 之上、不收合。⑨ 是可收合的實測 vs 設計範圍表。跟隨 Autotest_tool（`u2core.dutspec`／`powerprofile`／`designspec.compare`）；沒有 `U2_TOOL_DIR` 時改用隨附副本 `scope_wave_saver/specs/dut_power/`。設計值標明「非正式規格」。公開輸入另列、不與設計表混寫：U.2 12V ±8%（11.04–12.96 V；設計表 VIN 為 11.4–13.2）、M.2 3.3V ±5%（3.135–3.465 V）。缺 min–max 的軌標 **待填**，不臆造（見下方待辦）。
 
-**版面** — 視窗針對 1920×1080，預設約 **1920×1040**（留工作列）；程式會在 Windows 上試 `state("zoomed")` 最大化（尚未在實機 Windows 確認）。①–⑨ 與右欄各區可收合、拖標題改順序、拉分隔條、⧉ 拆成獨立視窗；狀態存 `%APPDATA%\scope_wave_saver\ui_layout.json`（Linux：`~/.config/scope_wave_saver/ui_layout.json`）。工具列：▶ 擷取＋存檔、■ 停止、⚡ ARB＋擷取、⟳ 實圖即時更新、📷 存上下實圖、⤓ 讀回／⤒ 寫入儀器設定。
+**版面** — 視窗針對 1920×1080，預設約 **1920×1040**（留工作列）；程式會在 Windows 上試 `state("zoomed")` 最大化（尚未在實機 Windows 確認）。①–⑩ 與右欄各區可收合、拖標題改順序、拉分隔條、⧉ 拆成獨立視窗；狀態存 `%APPDATA%\scope_wave_saver\ui_layout.json`（Linux：`~/.config/scope_wave_saver/ui_layout.json`）。工具列：▶ 擷取＋存檔、■ 停止、⚡ ARB＋擷取、⟳ 實圖即時更新、📷 存上下實圖、⤓ 讀回／⤒ 寫入儀器設定。
+
+突波／雜訊畫面：`ui_noise_main.png`（⑩ 設定 ＋ 結果表／最差 rail 波形）、`ui_noise_spec.png`（⑨ 的突波／雜訊區段）、`ui_noise_arb.png`（ARB 擷取後）、`noise_capture_突波雜訊.png`（每次擷取存的圖）。
 
 更多畫面說明見 `screenshots/`（例如 `ui_arb_RAMP.png`、`ui_folded.png`、`ui_spec_U2.png`、`ui_nvme_line.png`、`ui_nvme_auto_settings.png`、`ui_nvme_auto_drop_stop.png`）。
 
@@ -189,6 +217,7 @@ REM 或：run.bat --real
 | `--nvme-fail-rate 0.2` | 示範：自動 rescan 出狀況的機率 0–1 |
 | `--nvme-sim-seq ok,drop,…` | 示範：依序循環情境 `ok／drop／late／down_speed／down_width／smart` |
 | `--nvme-stop-on-drop` | 勾「掉盤時停止連續擷取」 |
+| `--spec-scroll 0..1` | 截圖用：⑨ 右欄判比表捲到的位置（1 = 最底，看突波／雜訊區段） |
 | `--unplug 6104B:4@3` | 示範：模擬拔 USB |
 | `--folder <資料夾>` | 存檔位置 |
 | `--save-to <資料夾>` | 測試：把目前畫面存到此資料夾 |
@@ -202,7 +231,7 @@ REM 或：run.bat --real
 py -3 -m unittest discover -s tests
 ```
 
-目前 40 項，涵蓋規格判比、版面遷移、NVMe 示範連線列、輔機訊號列序（VIN、VBUS、IBUS、BUSPG 在前），以及自動認盤的判定邏輯（OK／掉盤／降速／降寬／SMART、基準與預期值、輪詢與重試、SSH 失敗、示範情境、一行摘要、remove／smart 指令）。
+目前 60 項，涵蓋規格判比、版面遷移、NVMe 示範連線列、輔機訊號列序（VIN、VBUS、IBUS、BUSPG 在前），自動認盤的判定邏輯（OK／掉盤／降速／降寬／SMART、基準與預期值、輪詢與重試、SSH 失敗、示範情境、一行摘要、remove／smart 指令），以及突波／雜訊的量測數學（Vss、過衝／欠衝、漣波 Vpp／RMS、頻寬限制、前／後段窗口、無穩態原因）、限值優先順序與判定、設計表選填欄位、⑨ 整合與 CSV 欄位。
 
 ## 打包成 exe（Windows）
 
@@ -231,7 +260,7 @@ py -3 -m PyInstaller --noconfirm --clean ScopeWaveSaver.spec
 ├── scope_wave_saver/                  主套件
 │   ├── __init__.py                    套件版本
 │   ├── __main__.py                    python -m scope_wave_saver → gui
-│   ├── gui.py                         主視窗、工具列、①–⑨、指令列
+│   ├── gui.py                         主視窗、工具列、①–⑩、指令列
 │   ├── foldui.py                      子視窗收合／拖移／分隔條／ui_layout.json
 │   ├── capture.py                     連續擷取與 ARB＋擷取流程、存檔、summary.csv
 │   ├── lecroy.py                      LeCroy VISA 與示範 SimScope
@@ -244,6 +273,7 @@ py -3 -m PyInstaller --noconfirm --clean ScopeWaveSaver.spec
 │   ├── sequencing.py                  上／下電時序、slew、Δt、PASS／FAIL
 │   ├── pmeas.py                       P1–P24 示波器與 PC 計算
 │   ├── speccmp.py                     U.2／M.2 設計規格判比
+│   ├── noise.py                       突波／雜訊：過衝、欠衝、漣波 Vpp／RMS、限值判定、CSV／PNG
 │   ├── composite.py                   兩台 SCREEN_DUMP 上下無縫接合
 │   ├── nvmehost.py                    選用 Linux SSH NVMe rescan、認碟、SMART 讀取
 │   ├── nvmecheck.py                   上電後自動 rescan：判定（OK／掉盤／降速／降寬）、重試、背景執行
@@ -262,13 +292,14 @@ py -3 -m PyInstaller --noconfirm --clean ScopeWaveSaver.spec
 ├── tests/
 │   ├── test_speccmp.py                規格判比、版面遷移、NVMe 示範列
 │   ├── test_slave_first.py            輔機訊號列序
+│   ├── test_noise.py                  突波／雜訊量測數學、限值、判定、⑨ 整合
 │   └── test_nvmecheck.py              自動認盤判定、輪詢／重試、示範情境
 ├── samples/                           示範模式範例輸出
 │   ├── 畫面_上下.png、主_8208HD_實圖.png、輔_6104B_實圖.png
 │   ├── 連續擷取_示範/                  上電＋下電各一次及 summary.csv
 │   ├── ARB_Brownout_示範/             含未觸發的淺 brownout 列
 │   └── ARB_ON-OFF-ON_示範/
-└── screenshots/                       示範模式 UI 截圖（21 張）
+└── screenshots/                       示範模式 UI 截圖（25 張）
 ```
 
 擷取過程紀錄另外寫到 `桌面\scope waveform\scope_wave_saver.log`。
@@ -288,6 +319,8 @@ py -3 -m PyInstaller --noconfirm --clean ScopeWaveSaver.spec
   - U.2／M.2：**IBUS max**（設計表與 `timing_ref.json` 皆為空；Autotest 僅有 MP5519 預充 150 mA 註記）
   - U.2 公開輸入：**3.3Vaux** 上下限
   - **slew／Δt 正式上下限**（⑦ 由使用者自填；設計參考只記錄 soft-start／RSTn typ，不計入總判定）
+- [ ] **突波／雜訊預設限值待確認**：目前用「過衝 ≤ 5 %、欠衝 ≤ 5 %、漣波 Vpp ≤ 2 %」（佔 Vss）的工程預設，**不是正式規格**；請依實際規格改 ⑩，或在設計表 JSON 加 `ovs_pct`／`uns_pct`／`ripple_pct`／`ripple_mv`。確認前預設限值的判定不計入 ⑨ 總判定。
+- [ ] **突波／雜訊實機驗證**：目前只用示範波形驗證。實機要確認取樣點數／時基夠不夠（高頻漣波會偏低）、示波器頻寬限制設定與 ⑩ 數位低通是否一致、探棒（彈簧接地）量到的雜訊，以及穩態窗口（等待時間、容許帶）在真實上電波形上抓得對。
 - [ ] **淺 Brownout（−10%／−20%）**：模擬中 VIN 需低於約 9.0 V（UVLO）RSTn 才會掉，故這兩檔常記「未觸發」。實機 reset IC 是否在較淺掉電就動作，需接儀器後確認。
 
 ## 參考（Autotest_tool／All in Test tool）

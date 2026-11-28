@@ -32,6 +32,7 @@ PASS_C, FAIL_C, ERR_C = ("#1a7f37", "#dafbe1"), ("#cf222e", "#ffebe9"), ("#9a670
 RED = "#cf222e"
 from .rails import MASTER_DEF, NAMES, NCH, SLAVE_DEF, UNIT_A, VNOM, name_rank  # noqa: E402
 from . import speccmp as SC  # noqa: E402
+from . import noise as NZ  # noqa: E402
 TITLE_M = {"8208HD": "WaveRunner 8208HD（8 CH）", "6104B": "HDO6104B（4 CH）"}
 KEY = {"8208HD": "wr8000", "6104B": "hdo6104"}
 ADDR = {"8208HD": "USB0::0x05FF::0x1023::5003N60268::0::INSTR", "6104B": "USB0::0x05FF::0x1023::5108N13350::0::INSTR"}
@@ -185,6 +186,7 @@ class WaveSaverUI(tk.Tk):
         self._seq_card(self._left_card("seq", "上電時序（PC 計算）", 7))
         self._arb_card(self._left_card("arb", "N6705 ARB 啟動＋擷取（Ramp / Brownout margin / Instant ON-OFF-ON）", 8))
         self._spec_card(self._left_card("spec", "設計規格判比（實測 vs 電源設計表）", 9))
+        self._noise_card(self._left_card("noise", "突波／雜訊量測（過衝、欠衝、漣波 Vpp；PC 計算）", 10))
         self._monitor(body)
         self.after(200, self._restore_sashes)
         self.after(400, lambda: self.body.pw.bind("<ButtonRelease-1>", lambda _e: self._persist_sash(), add="+"))
@@ -226,7 +228,7 @@ class WaveSaverUI(tk.Tk):
             pass
 
     def _apply_fold(self, fold="", unfold=""):
-        """測試 / 截圖：強制收合或展開指定 key（逗號分隔：conn,trig,ch,pm,save,cap,seq,arb,spec,shots,waves,seqv,specv,pmt,saved,log,nvme）。DUT 規格選擇列在最上方，不收進 fold。"""
+        """測試 / 截圖：強制收合或展開指定 key（逗號分隔：conn,trig,ch,pm,save,cap,seq,arb,spec,noise,shots,waves,seqv,specv,noisev,pmt,saved,log,nvme）。DUT 規格選擇列在最上方，不收進 fold。"""
         def keys(s):
             return [k.strip() for k in (s or "").split(",") if k.strip()]
         for k in keys(fold):
@@ -698,7 +700,7 @@ class WaveSaverUI(tk.Tk):
         except tk.TclError:
             pass
         stack = SashStack(body.right, store=self.ui_store, group="right",
-                          defaults={"shots": 3.2, "waves": 1.6, "seqv": 2.0, "specv": 1.6, "pmt": 1.0,
+                          defaults={"shots": 3.2, "waves": 1.6, "seqv": 2.0, "specv": 1.6, "noisev": 1.8, "pmt": 1.0,
                                     "saved": 0.8, "log": 1.1, "nvme": 1.0})
         stack.pack(fill="both", expand=True, padx=(6, 0))
         self.right_stack = stack
@@ -753,6 +755,9 @@ class WaveSaverUI(tk.Tk):
         # -- ⑨ 規格判比結果（預設收合；選了機種或擷取後展開看）
         spf = self._right_card("specv", "設計規格判比（實測 vs 電源設計表）", default_open=False, weight=1.6)
         self._spec_tab(spf)
+        # -- 突波／雜訊結果（預設收合）
+        nzf = self._right_card("noisev", "突波／雜訊量測結果（表＋最差 rail 波形）", default_open=False, weight=1.8)
+        self._noise_tab(nzf)
         # -- P 量測（預設收合）
         pf = self._right_card("pmt", "P 量測結果", default_open=False, weight=1.0)
         tv = ttk.Treeview(pf, columns=("sc", "p", "lab", "inst", "pc", "pct", "ok"), show="headings", height=8)
@@ -1074,7 +1079,7 @@ class WaveSaverUI(tk.Tk):
         ttk.Label(f, textvariable=self.v_spec_src, style="U.Muted.TLabel", wraplength=780, justify="left").pack(anchor="w")
         cols = ("ch", "nom", "rng", "meas", "ok")
         heads = ("通道", "標稱", "設計範圍", "實測", "判定")
-        tv = ttk.Treeview(f, columns=cols, show="headings", height=8)
+        tv = ttk.Treeview(f, columns=cols, show="headings", height=10)
         for c, h, w in zip(cols, heads, (90, 56, 200, 70, 70)):
             tv.heading(c, text=h)
             tv.column(c, width=w, anchor="center", stretch=c == "rng")
@@ -1229,7 +1234,8 @@ class WaveSaverUI(tk.Tk):
         if not hasattr(self, "tv_spec_left") and not hasattr(self, "tv_spec"):
             return
         meas, seq_rows = self._spec_meas(waves, seq_rows, pm_rows)
-        result = SC.compare_measurements(meas, seq_rows=seq_rows)
+        nrows = self._noise_calc(waves)
+        result = SC.compare_measurements(meas, seq_rows=seq_rows, noise_rows=nrows)
         self._spec_last = result
         ov = result["overall_txt"]
         if hasattr(self, "v_spec_overall"):
@@ -1265,6 +1271,12 @@ class WaveSaverUI(tk.Tk):
                     tv.insert("", "end", values=(r["ch"], "", r.get("spec") or "",
                                                  r.get("meas") or "", r["verdict"]),
                               tags=(r["verdict"] or "N/A",))
+        if hasattr(self, "tv_spec_left") and result.get("noise"):
+            tv = self.tv_spec_left
+            tv.insert("", "end", values=("── 突波／雜訊 ──", "", "限值（預設待確認）", "", ""), tags=("REF",))
+            for r in result["noise"]:
+                tv.insert("", "end", values=(r["ch"], "", r.get("spec") or "", (r.get("meas") or "")[:40],
+                                             r["verdict"]), tags=(r["verdict"] or "N/A",))
         if hasattr(self, "tv_spec"):
             tv = self.tv_spec
             tv.delete(*tv.get_children())
@@ -1283,8 +1295,195 @@ class WaveSaverUI(tk.Tk):
                                                  r.get("why") or "", r.get("meas") or "",
                                                  r.get("spec") or "", r["verdict"]),
                               tags=(r["verdict"] or "N/A",))
+            if result.get("noise"):
+                tv.insert("", "end", values=("── 突波／雜訊（預設限值待確認；使用者／設計表限值才計總判定）──",
+                                             "", "", "", "", "", "", "", "", ""), tags=("REF",))
+                for r in result["noise"]:
+                    tv.insert("", "end", values=(r["ch"], "", "", "", "", "",
+                                                 r.get("why") or "", r.get("meas") or "",
+                                                 r.get("spec") or "", r["verdict"]),
+                              tags=(r["verdict"] or "N/A",))
+        self._noise_show(nrows)
 
-    def _spec_csv(self, waves, sq_rows, pm_rows):
+    # ---- ⑩ 突波／雜訊量測（設定）＋ 右欄結果
+    def _noise_card(self, f):
+        """⑩ 設定：穩態等待、頻寬限制、限值（預設＝待確認）、每條 rail 覆寫。結果在右欄「突波／雜訊量測結果」。"""
+        from . import sequencing as SQ
+        top = ttk.Frame(f)
+        top.pack(fill="x")
+        ttk.Checkbutton(top, text="啟用（擷取時算、存 突波雜訊.csv／.png、summary.csv 欄位）",
+                        variable=self._bv("nz_on", True), command=self._noise_changed).pack(side="left")
+        ttk.Button(top, text="⟳ 重算", style="U.Small.TButton", command=lambda: self._spec_refresh()).pack(side="right")
+        r1 = ttk.Frame(f)
+        r1.pack(fill="x", pady=(4, 0))
+        ttk.Label(r1, text="穩態等待").pack(side="left")
+        e = ttk.Entry(r1, textvariable=self._sv("nz_settle", "0.5"), width=5)
+        e.pack(side="left", padx=(3, 0))
+        ttk.Label(r1, text="ms　頻寬限制").pack(side="left", padx=(0, 3))
+        cb = ttk.Combobox(r1, textvariable=self._sv("nz_bw", "關閉"), values=list(NZ.BW_CHOICES), state="readonly", width=8)
+        cb.pack(side="left")
+        ttk.Label(r1, text="　穩態容許帶").pack(side="left")
+        ttk.Entry(r1, textvariable=self._sv("nz_band", "1"), width=4).pack(side="left", padx=(3, 0))
+        ttk.Label(r1, text="%").pack(side="left")
+        r2 = ttk.Frame(f)
+        r2.pack(fill="x", pady=(4, 0))
+        ttk.Label(r2, text="限值（佔穩態 Vss）　過衝 ≤").pack(side="left")
+        ttk.Entry(r2, textvariable=self._sv("nz_ovs", f"{NZ.DEFAULT_LIMITS['ovs_pct']:g}"), width=5).pack(side="left", padx=3)
+        ttk.Label(r2, text="%　欠衝 ≤").pack(side="left")
+        ttk.Entry(r2, textvariable=self._sv("nz_uns", f"{NZ.DEFAULT_LIMITS['uns_pct']:g}"), width=5).pack(side="left", padx=3)
+        ttk.Label(r2, text="%　漣波 Vpp ≤").pack(side="left")
+        ttk.Entry(r2, textvariable=self._sv("nz_rip", f"{NZ.DEFAULT_LIMITS['ripple_pct']:g}"), width=5).pack(side="left", padx=3)
+        ttk.Label(r2, text="%").pack(side="left")
+        self.v_nz_src = tk.StringVar(self, value="")
+        tk.Label(f, textvariable=self.v_nz_src, fg="#9a6700", bg="#fff8c5", anchor="w", justify="left",
+                 font=(self.fam, 9), wraplength=760, padx=6, pady=2).pack(fill="x", pady=(4, 0))
+        ttk.Checkbutton(f, text="預設限值（待確認）的 PASS／FAIL 也計入 ⑨ 規格總判定（預設不計；使用者或設計表的限值一律計）",
+                        variable=self._bv("nz_incl", False), command=self._noise_changed).pack(anchor="w", pady=(2, 0))
+        ttk.Label(f, text="每條 rail 覆寫限值（空白 = 用上面的全域值或設計表 JSON 的 ovs_pct／uns_pct／ripple_pct／ripple_mv）",
+                  style="U.Muted.TLabel").pack(anchor="w", pady=(4, 0))
+        t = ttk.Frame(f)
+        t.pack(fill="x")
+        for j, h in enumerate(("rail", "過衝 %", "欠衝 %", "漣波 Vpp %", "漣波 Vpp mV")):
+            tk.Label(t, text=h, bg="#0E9BD8", fg="white", font=(self.fam, 9, "bold"), padx=4).grid(row=0, column=j, sticky="we", padx=1)
+        self._nz_rail_names = [x["name"] for x in SQ.default_rails() if x["kind"] == "rail"]
+        for k, nm in enumerate(self._nz_rail_names):
+            ttk.Label(t, text=nm, font=(self.fam, 9, "bold")).grid(row=k + 1, column=0, sticky="w", padx=2)
+            for j, key in enumerate(("ovs", "uns", "rip", "mv")):
+                ttk.Entry(t, textvariable=self._sv(f"nz_{key}_{k}", ""), width=8).grid(row=k + 1, column=j + 1, padx=1)
+        ttk.Label(f, text="PC 用存下來的波形算，不佔示波器 P1–P12／P1–P8。穩態 = 後段（或下電時的前段）窗口的中位數；過衝／欠衝 = 最後一次到達穩態之後的最高／最低點對 Vss；"
+                          "漣波 = 窗口內去掉線性漂移後的 Vpp（另有 RMS）。RSTn／BUSPG 不量；IBUS（電流）只記錄不判。頻寬限制 = 數位低通（移動平均）。",
+                  style="U.Muted.TLabel", wraplength=780, justify="left").pack(anchor="w", pady=(4, 0))
+        for k in ("nz_settle", "nz_bw", "nz_band", "nz_ovs", "nz_uns", "nz_rip") + tuple(
+                f"nz_{a}_{i}" for i in range(len(self._nz_rail_names)) for a in ("ovs", "uns", "rip", "mv")):
+            self.v[k].trace_add("write", lambda *_: self._noise_changed())
+        self._noise_src_text()
+
+    def _noise_changed(self):
+        self._noise_src_text()
+        aid = getattr(self, "_nz_after", None)
+        if aid:
+            try:
+                self.after_cancel(aid)
+            except tk.TclError:
+                pass
+        if hasattr(self, "tv_noise"):
+            self._nz_after = self.after(400, self._spec_refresh)
+
+    def _noise_src_text(self):
+        try:
+            cfg = self._noise_cfg()
+        except Exception:  # noqa: BLE001
+            return
+        usr = [k for k in cfg["limits_user"]]
+        if usr:
+            self.v_nz_src.set("全域限值有被你改過（" + "、".join({"ovs_pct": "過衝", "uns_pct": "欠衝", "ripple_pct": "漣波"}.get(k, k) for k in usr)
+                              + "）→ 來源「使用者」，計入 ⑨ 總判定；沒改的仍是預設（待確認）。")
+        else:
+            self.v_nz_src.set("目前用的是預設限值（過衝 ≤ 5 %、欠衝 ≤ 5 %、漣波 Vpp ≤ 2 %）：這是「預設／待確認」的工程值，不是正式規格；"
+                              "請依實際規格修改。")
+
+    def _noise_cfg(self):
+        """UI → noise.analyze 的 cfg（主執行緒呼叫；結果交給擷取執行緒用）。"""
+        def num(k, d=None):
+            try:
+                v = self.v[k].get().strip()
+                return float(v) if v else d
+            except (ValueError, KeyError):
+                return d
+        cfg = NZ.default_cfg()
+        cfg["on"] = bool(self.v["nz_on"].get())
+        cfg["settle_ms"] = max(num("nz_settle", 0.5) or 0.0, 0.0)
+        cfg["bw_hz"] = NZ.BW_CHOICES.get(self.v["nz_bw"].get(), 0.0)
+        cfg["band_pct"] = num("nz_band", 1.0) or 1.0
+        g = {"ovs_pct": num("nz_ovs"), "uns_pct": num("nz_uns"), "ripple_pct": num("nz_rip"), "ripple_mv": None}
+        cfg["limits"] = g
+        cfg["limits_user"] = tuple(k for k in ("ovs_pct", "uns_pct", "ripple_pct") if g[k] != NZ.DEFAULT_LIMITS[k])
+        cfg["include_default"] = bool(self.v["nz_incl"].get())
+        over = {}
+        for k, nm in enumerate(getattr(self, "_nz_rail_names", [])):
+            o = {"ovs_pct": num(f"nz_ovs_{k}"), "uns_pct": num(f"nz_uns_{k}"), "ripple_pct": num(f"nz_rip_{k}"),
+                 "ripple_mv": num(f"nz_mv_{k}")}
+            o = {a: b for a, b in o.items() if b is not None}
+            if o:
+                over[nm] = o
+        cfg["rail_over"] = over
+        try:
+            cfg["design"] = NZ.design_limits()
+        except Exception:  # noqa: BLE001
+            cfg["design"] = {}
+        return cfg
+
+    def _noise_calc(self, waves=None):
+        if not hasattr(self, "seq_rails") or "nz_on" not in self.v:
+            return []
+        cfg = self._noise_cfg()
+        if not cfg["on"]:
+            return []
+        wv = waves if waves is not None else (self._waves_flat() if hasattr(self, "waves") else {})
+        if not wv:
+            return []
+        try:
+            return NZ.analyze(wv, self._rails_from_ui(), cfg)
+        except Exception as e:  # noqa: BLE001
+            self.log(f"⚠ 突波／雜訊量測失敗：{type(e).__name__}: {e}")
+            return []
+
+    def _noise_tab(self, f):
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        from matplotlib.figure import Figure
+        hd = ttk.Frame(f)
+        hd.pack(fill="x")
+        self.v_nz_sum = tk.StringVar(self, value="尚無突波／雜訊資料")
+        ttk.Label(hd, textvariable=self.v_nz_sum, font=(self.fam, 10, "bold"), foreground="#0E9BD8").pack(side="left")
+        cols = ("rail", "vss", "ovs", "ovsp", "uns", "unsp", "rip", "ripp", "rms", "lim", "ok", "src")
+        heads = ("rail", "穩態 Vss", "過衝 mV", "過衝 %", "欠衝 mV", "欠衝 %", "漣波 mVpp", "漣波 %", "RMS mV", "限值", "判定", "限值來源")
+        tv = ttk.Treeview(f, columns=cols, show="headings", height=7)
+        for c, h, w in zip(cols, heads, (80, 66, 62, 56, 62, 56, 72, 56, 56, 190, 48, 110)):
+            tv.heading(c, text=h)
+            tv.column(c, width=w, anchor="center", stretch=c in ("lim", "src"))
+        for tag, fg, bg in (("PASS", "#1a7f37", "#dafbe1"), ("FAIL", "#cf222e", "#ffebe9"), ("N/A", "#656d76", "#f6f8fa")):
+            tv.tag_configure(tag, foreground=fg, background=bg)
+        tv.pack(fill="x")
+        tv.bind("<<TreeviewSelect>>", lambda _e: self._noise_plot())
+        self.tv_noise = tv
+        self.fig_nz = Figure(figsize=(8, 2.6), dpi=96, facecolor="#FFFFFF")
+        self.cv_nz = FigureCanvasTkAgg(self.fig_nz, f)
+        self.cv_nz.get_tk_widget().pack(fill="both", expand=True)
+        self._nz_rows = []
+
+    def _noise_show(self, rows):
+        if not hasattr(self, "tv_noise"):
+            return
+        self._nz_rows = list(rows or [])
+        tv = self.tv_noise
+        sel = tv.selection()
+        keep = int(sel[0]) if sel and sel[0].isdigit() else None
+        tv.delete(*tv.get_children())
+        for i, x in enumerate(self._nz_rows):
+            tv.insert("", "end", iid=str(i), values=NZ.table_values(x), tags=(x["verdict"],))
+        self.v_nz_sum.set(NZ.summary_text(self._nz_rows))
+        if self._nz_rows:
+            w = NZ.worst(self._nz_rows)
+            idx = keep if (keep is not None and keep < len(self._nz_rows)) else (self._nz_rows.index(w) if w else 0)
+            tv.selection_set(str(idx))
+        else:
+            self._noise_plot()
+
+    def _noise_plot(self):
+        fig = self.fig_nz
+        fig.clear()
+        sel = self.tv_noise.selection()
+        if not self._nz_rows or not sel or not sel[0].isdigit():
+            self.cv_nz.draw_idle()
+            return
+        x = self._nz_rows[int(sel[0])]
+        ax = fig.add_subplot(111)
+        NZ.draw_rail(ax, x, self._waves_flat(), fam=NZ._cjk())
+        ax.set_xlabel("時間 (ms)，t = 0 = 主觸發（淡藍 = 穩態窗口、虛線 = Vss、▲ 過衝、▼ 欠衝）", fontsize=8, family=NZ._cjk())
+        fig.subplots_adjust(left=0.07, right=0.99, top=0.80, bottom=0.2)
+        self.cv_nz.draw_idle()
+
+    def _spec_csv(self, waves, sq_rows, pm_rows, noise_rows=None):
         """給 Capture 執行緒寫 summary.csv：只用波形／時序列，不讀 Tk 變數。"""
         meas = {}
         for x in sq_rows or []:
@@ -1300,7 +1499,7 @@ class WaveSaverUI(tk.Tk):
             if w:
                 meas[name] = SC.steady_mean(w[0], w[1], t_on=x.get("t_on") or x.get("t_hi"),
                                             kind="current" if x.get("kind") == "current" else "rail")
-        result = SC.compare_measurements(meas, seq_rows=sq_rows)
+        result = SC.compare_measurements(meas, seq_rows=sq_rows, noise_rows=noise_rows)
         return SC.csv_cols(result)
 
     def _spec_edit(self, save_as=False):
@@ -1979,7 +2178,7 @@ class WaveSaverUI(tk.Tk):
     def _select_mon_tab(self, hint):
         """展開對應的右欄子視窗（相容舊的分頁名稱）。"""
         mp = {"時序": "seqv", "NVMe": "nvme", "認碟": "nvme", "合成": "waves", "合一": "waves",
-              "實圖": "shots", "畫面": "shots", "紀錄": "log", "存檔": "saved", "P 量": "pmt", "量測": "pmt"}
+              "實圖": "shots", "畫面": "shots", "紀錄": "log", "存檔": "saved", "突波": "noisev", "雜訊": "noisev", "P 量": "pmt", "量測": "pmt"}
         key = None
         for k, v in mp.items():
             if k in (hint or ""):
@@ -2194,7 +2393,7 @@ class WaveSaverUI(tk.Tk):
                     fmt={k: self.v[f"fmt_{k}"].get() for k in ("png", "trc", "csv", "npz", "pm")}, pm=pm,
                     rails=self._rails_from_ui(), seq_on=self.v["seq_save"].get(), legend=self._legend(),
                     trig=trig, trig_text=self._trig_text(), nvme=nvme,
-                    spec_compare=self._spec_csv, **o)
+                    noise=self._noise_cfg(), spec_compare=self._spec_csv, **o)
 
     def start_arb_capture(self, loops=None):
         """⚡ ARB＋擷取：兩台 arm → N6705 下載 / 啟動 ARB → 等觸發 → 讀 / 存（循環 N 次 × 掃描值）"""
@@ -2523,6 +2722,7 @@ def main(argv=None):
     ap.add_argument("--save-to", default="", help="（測試）照目前顯示存檔到此資料夾")
     ap.add_argument("--scroll", type=float, default=0.0, help="左欄捲到（0–1）")
     ap.add_argument("--shot", default="", help="截圖存檔路徑（給 review 用）")
+    ap.add_argument("--spec-scroll", type=float, default=None, help="（截圖）⑨ 右欄判比表捲到（0–1，1 = 最底）")
     ap.add_argument("--shot-after", type=float, default=2.5, help="幾秒後截圖")
     ap.add_argument("--layout", default="", help="版面 json（收合／分隔條）；「-」= 不讀不寫")
     ap.add_argument("--fold", default="", help="（測試／截圖）強制收合的子視窗 key，逗號分隔")
@@ -2599,6 +2799,8 @@ def main(argv=None):
                     if isinstance(c, tk.Canvas):
                         c.yview_moveto(a.scroll)
         app.after(1800, _sc)
+    if a.spec_scroll is not None:
+        app.after(2200, lambda: app.tv_spec.yview_moveto(a.spec_scroll))
     if a.shot:
         def shot():
             app.update_idletasks()
