@@ -12,6 +12,7 @@
   ARB（N6705，cfg["arb"]）：兩台 arm 完 → 下載各通道 ARB（每次擷取用掃描的下一個值）→ OUTP ON → INIT:TRAN → *TRG
      → 等主觸發（逾時 = ARB 長度 + 1 s；沒觸發 = DUT 沒掉電 / 觸發條件沒成立 → summary 記「未觸發」、換下一個值）
      停止 / 錯誤 → N6705 安全中止（ABOR:TRAN → OUTP OFF，或維持最後電壓）
+  7b. 突波／雜訊（noise.py：過衝、欠衝、漣波 Vpp，PC 算）→ 突波雜訊.csv／.png、summary.csv 欄位
   8. summary.csv 加一列（序號、時間、上電 / 下電、輔有沒有觸發、時序判定、順序、每條 rail 延遲與 slew rate、每個 P 值）
 資料夾：<存到>\\<前綴>_<日期時間>_連續\\0001_210012\\0001_畫面_上下.png …、summary.csv 在 _連續 資料夾。
 """
@@ -28,6 +29,7 @@ import numpy as np
 
 from . import composite as CP
 from . import pmeas as PM
+from . import noise as NZ
 from . import sequencing as SQ
 from .lecroy import parse_wavedesc
 from .link import Disconnected
@@ -133,6 +135,7 @@ class Capture:
         self.gaps = []
         self._gap_note = ""
         self._sum_cols = None
+        self._nz_last = []
         self._arb_txt, self._arb_info = "", None
         self._pending = []
 
@@ -417,6 +420,21 @@ class Capture:
             files.append(SQ.save_png(sq_rows, waves, os.path.join(folder, f"{pre}{dtx}時序.png"), ref=c.get("ref", "VIN"),
                                      title=f"#{seq}  {t_trig:%Y-%m-%d %H:%M:%S}  {dtx}時序 ＋ slew rate（參考 {c.get('ref', 'VIN')}）"
                                            + (f"  → {verdict}" if verdict else "")))
+        # ---- 突波／雜訊（PC 算；每條電源 rail 的過衝、欠衝、漣波 Vpp）
+        nz_cfg = c.get("noise") or {}
+        nz_rows = []
+        if nz_cfg.get("on"):
+            try:
+                nz_rows = NZ.analyze(waves, c.get("rails"), nz_cfg)
+                files.append(NZ.save_csv(nz_rows, os.path.join(folder, f"{pre}突波雜訊.csv")))
+                if nz_cfg.get("save", True) and fmt.get("png", True):
+                    files.append(NZ.save_png(nz_rows, waves, os.path.join(folder, f"{pre}突波雜訊.png"),
+                                             title=f"#{seq}  {t_trig:%Y-%m-%d %H:%M:%S}  突波／雜訊（淡藍 = 穩態窗口、虛線 = Vss、"
+                                                   f"▲ 過衝、▼ 欠衝、★ 最差）"))
+            except Exception as e:  # noqa: BLE001
+                self.log(f"⚠ 第 {seq} 次突波／雜訊量測失敗：{type(e).__name__}: {e}")
+                nz_rows = []
+        self._nz_last = nz_rows
         nvme_rows = self._nvme_after(seq) if self._arb_on() else None
         info = {"seq": seq, "time": t_trig.isoformat(timespec="milliseconds"), "slave_triggered": s_ok,
                 "idn": idn, "trig": c.get("trig_text", ""), "gap_before": self._gap_note,
@@ -436,7 +454,7 @@ class Capture:
                  + ("" if s_ok else "（輔未觸發）") + f"；{dtx}" + (f"時序 {verdict}" if verdict else ""))
         return {"seq": seq, "N": n_tot, "time": t_trig.strftime("%H:%M:%S"), "folder": folder, "files": files,
                 "stack": out, "pngs": {ss.model: sp, ms.model: mp}, "waves": waves, "seq_rows": sq_rows,
-                "verdict": verdict, "pm_rows": pm_rows, "slave_ok": s_ok, "direction": SQ.direction_of(sq_rows),
+                "verdict": verdict, "pm_rows": pm_rows, "noise_rows": nz_rows, "slave_ok": s_ok, "direction": SQ.direction_of(sq_rows),
                 "nvme": getattr(self, "_nvme_last", None)}
 
     def _summary(self, seq, t_trig, s_ok, folder, sq_rows, verdict, pm_rows, nfiles, waves=None):
@@ -447,12 +465,14 @@ class Capture:
                     [f"{x['role']}{x['name']} 10-90% ms" for x in srt] + \
                     [f"{x['role']}{x['name']} slew {'A' if x['kind'] == 'current' else 'V'}/ms" for x in srt]
         pm_cols = [f"{r['model']} {r['label']}" for r in pm_rows]
+        nz_cols = (list(NZ.NOISE_CSV) + NZ.summary_col_names(getattr(self, "_nz_last", None))) \
+            if (self.cfg.get("noise") or {}).get("on") else []
         if self._sum_cols is None:
             nvme_cols = ["NVMe 數", "NVMe 裝置", "NVMe 型號", "NVMe 序號", "NVMe 容量", "NVMe 韌體", "NVMe BDF", "NVMe Link"] \
                 if (self.cfg.get("nvme") or {}).get("on") else []
             self._sum_cols = ["序號", "觸發時間", "方向", "輔觸發", "時序判定", "順序", "檔案數", "資料夾", "備註"] + \
                 list(SPEC_CSV) + \
-                (["ARB 通道", "ARB 範本", "ARB 掃描值", "ARB 參數"] if self._arb_on() else []) + nvme_cols + rail_cols + pm_cols
+                (["ARB 通道", "ARB 範本", "ARB 掃描值", "ARB 參數"] if self._arb_on() else []) + nvme_cols + rail_cols + nz_cols + pm_cols
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 csv.writer(f).writerow(self._sum_cols)
             self._flush_pending()
@@ -467,6 +487,8 @@ class Capture:
         d.update(self._arb_cols())
         d.update(self._nvme_cols())
         d.update(self._spec_cols(waves, sq_rows, pm_rows))
+        if (self.cfg.get("noise") or {}).get("on"):
+            d.update(NZ.summary_cols(getattr(self, "_nz_last", None)))
         for r in pm_rows:
             v = r["scope"] if r["scope"] is not None else r["pc"]
             d[f"{r['model']} {r['label']}"] = "" if v is None else f"{v:.6g}"
@@ -479,7 +501,8 @@ class Capture:
         if not callable(fn):
             return {k: "" for k in SPEC_CSV}
         try:
-            return fn(waves, sq_rows, pm_rows) or {k: "" for k in SPEC_CSV}
+            return fn(waves, sq_rows, pm_rows, noise_rows=getattr(self, "_nz_last", None) if waves is not None else None) \
+                or {k: "" for k in SPEC_CSV}
         except Exception as e:  # noqa: BLE001
             return {"規格總判定": "N/A", "規格明細": f"判比失敗：{type(e).__name__}: {e}"}
 
@@ -529,8 +552,9 @@ class Capture:
                 return
             nvme_cols = ["NVMe 數", "NVMe 裝置", "NVMe 型號", "NVMe 序號", "NVMe 容量", "NVMe 韌體", "NVMe BDF", "NVMe Link"] \
                 if (self.cfg.get("nvme") or {}).get("on") else []
+            nz_cols = list(NZ.NOISE_CSV) if (self.cfg.get("noise") or {}).get("on") else []
             self._sum_cols = ["序號", "觸發時間", "方向", "輔觸發", "時序判定", "順序", "檔案數", "資料夾", "備註"] + \
-                list(SPEC_CSV) + ["ARB 通道", "ARB 範本", "ARB 掃描值", "ARB 參數"] + nvme_cols
+                list(SPEC_CSV) + ["ARB 通道", "ARB 範本", "ARB 掃描值", "ARB 參數"] + nvme_cols + nz_cols
             with open(path, "w", newline="", encoding="utf-8-sig") as f:
                 csv.writer(f).writerow(self._sum_cols)
         with open(path, "a", newline="", encoding="utf-8") as f:

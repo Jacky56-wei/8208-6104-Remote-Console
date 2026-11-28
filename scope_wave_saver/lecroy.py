@@ -306,6 +306,53 @@ def _sim_names(model):
     return NAMES[model]
 
 
+
+# ---- 示範用：真實一點的 ripple／雜訊與負載暫態（給「突波／雜訊」量測看）-------------------------
+RIPPLE_PP = {"CORE": 0.006, "DDRVPP": 0.004, "GPIO": 0.003, "DDRIO": 0.005, "PHYIO": 0.004, "NFIO": 0.026,
+             "NFCORE": 0.005, "VIN": 0.002, "VBUS": 0.003}          # 漣波 Vpp 佔標稱的比例（NFIO 故意超過預設 2 %）
+LOAD_STEP = {"DDRVPP": +0.10, "CORE": -0.05, "GPIO": +0.03, "NFCORE": -0.02}   # 負載暫態環鈴振幅（+ 先過衝、− 先欠衝）
+RIPPLE_HZ, RING_HZ, RING_TAU, LOAD_STEP_T = 40e3, 2.5e3, 0.25e-3, 2.0e-3
+
+
+def sim_ripple(t, y, nm, v, rng):
+    """y + 開關 ripple（只在 rail 有電時）＋ 小的高斯雜訊。邏輯訊號只加一點點雜訊。"""
+    t = np.asarray(t, float)
+    y = np.asarray(y, float)
+    if nm in ("RSTn", "BUSPG") or nm.endswith("n"):
+        return y + 0.002 * v * rng.standard_normal(len(y))
+    if nm == "IBUS":
+        return y + 0.004 * 1.0 * rng.standard_normal(len(y))
+    amp = 0.5 * RIPPLE_PP.get(nm, 0.004) * v
+    ph = (sum(map(ord, nm)) % 7) * 0.9
+    on = np.clip(y / max(v, 1e-9), 0.0, 1.0)
+    return y + on * amp * np.sin(2 * np.pi * RIPPLE_HZ * t + ph) + 0.0006 * v * rng.standard_normal(len(y))
+
+
+def sim_loadstep(t, nm, v, t_ev=LOAD_STEP_T):
+    """負載暫態：t_ev 之後一段衰減環鈴（+ 先過衝、− 先欠衝）。"""
+    a = LOAD_STEP.get(nm)
+    t = np.asarray(t, float)
+    if not a:
+        return np.zeros(len(t))
+    x = np.clip(t - t_ev, 0.0, None)
+    return a * v * np.exp(-x / RING_TAU) * np.sin(2 * np.pi * RING_HZ * x) * (t >= t_ev)
+
+
+def _arrive_ring(e, dt, tau, nm, v):
+    """上電到位後的衰減環鈴（示範：ARB 上電也看得到過衝／欠衝）。e = 0/1 狀態；只對上升緣。"""
+    e = np.asarray(e, float)
+    amp = 0.6 * abs(LOAD_STEP.get(nm, 0.012))
+    up = np.clip(np.diff(e, prepend=e[0]), 0.0, None)
+    if not up.any():
+        return np.zeros(len(e))
+    k_t = np.arange(0.0, 5 * RING_TAU, max(dt, 1e-9))
+    kern = np.exp(-k_t / RING_TAU) * np.sin(2 * np.pi * RING_HZ * k_t)
+    sh = int(round(tau / max(dt, 1e-9)))
+    r = np.convolve(up, kern)[:len(e)]
+    r = np.concatenate([np.zeros(sh), r])[:len(e)]
+    return amp * v * r
+
+
 def sim_waves(model, jit=None, t0=-2e-3, t1=8e-3, n=10000, rng=None, direction="up", vnom=None):
     """上電時序（觸發 t = 0 = 主 C8 RSTn 上升；輔 VIN 比 RSTn 早）→ {ch: (t, y)}
     direction="down"：下電（t = 0 = 主 C8 RSTn 下降；反順序：RSTn / BUSPG 先掉，VIN 最後）"""
@@ -328,7 +375,7 @@ def sim_waves(model, jit=None, t0=-2e-3, t1=8e-3, n=10000, rng=None, direction="
         y = v * np.clip((t - d) / tau, 0, 1) if not nm.endswith("n") and nm != "BUSPG" else v * (t > d + 1.2e-3)
         if nm == "IBUS":
             y = 0.8 * np.exp(-np.clip(t - d, 0, None) / 1e-3) * (t > d) + 0.15 * (t > d)
-        out[i + 1] = (t, y + 0.004 * v * rng.standard_normal(n))
+        out[i + 1] = (t, sim_ripple(t, y + sim_loadstep(t, nm, v) * (y > 0.5 * v), nm, v, rng))
     return out
 
 
@@ -356,7 +403,7 @@ def _sim_down(model, jit, t0, t1, n, rng, vnom=None):
             y = 0.15 * (1 - np.clip((t - d) / 0.3e-3, 0, 1))
         else:
             y = v * (1 - np.clip((t - d) / tau, 0, 1))
-        out[i + 1] = (t, y + 0.004 * v * rng.standard_normal(n))
+        out[i + 1] = (t, sim_ripple(t, y, nm, v, rng))
     return out
 
 
@@ -466,6 +513,8 @@ def sim_arb_waves(tp, vp, rng=None, t0=-2e-3, t1=8e-3, n=10000, trig=None):
         v = VNOM.get(nm, 1.0)
         e = state(nm)
         y = v * (e if nm == "RSTn" else _movavg(e, tau / dt))
+        if nm not in ("RSTn", "BUSPG"):
+            y = y + _arrive_ring(e, dt, tau, nm, v)
         out["8208HD"][i + 1] = (t, y)
     vin = np.interp(ta, tp, vp)
     vbus = 0.99 * np.interp(ta - 0.25e-3, tp, vp)
@@ -581,7 +630,8 @@ class SimScope(LeCroyScope):
         if self.bus.dir == "arb" and self.bus.cur:
             t, y = self.bus.cur[self.model][k]
             v = max(float(np.max(np.abs(y))), 0.05)
-            y = y + 0.004 * v * rng.standard_normal(len(y))
+            from .rails import NAMES as _N
+            y = sim_ripple(t, y, _N[self.model][k - 1], v, rng)
             return encode_wavedesc(y, float(t[1] - t[0]), float(t[0]), "A" if (self.model, k) == ("6104B", 4) else "V",
                                    k - 1, self.model)
         t, y = sim_waves(self.model, self.jit, rng=rng, direction=self.bus.dir)[k]

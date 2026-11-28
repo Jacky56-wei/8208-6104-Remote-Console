@@ -652,12 +652,14 @@ def _public_row(form, meas):
     }
 
 
-def compare_measurements(meas, seq_rows=None, timing_limits=None):
+def compare_measurements(meas, seq_rows=None, timing_limits=None, noise_rows=None):
     """meas: {通道名: 實測穩態 V 或 IBUS 峰值 A}；seq_rows 可帶 rise／delay 做時序參考。
 
     → dict(rows, timing, overall, overall_txt, form, profile, note, warn, public_notes)
     總判定只計設計表有 min–max 的電壓（及公開輸入 VIN、⑦ 已填的時序限制）；
     soft-start／RSTn typ 為「只記錄」，不計入總判定。
+    noise_rows（noise.analyze 的結果）→ result["noise"]：每條 rail 一列「突波／雜訊」。
+    限值來自使用者或設計表 JSON 的才計入總判定；預設值（待確認）預設只列出、不計（見 noise.analyze 的 counts）。
     """
     form = DUT.get() or "U2"
     profile = PP.get() or DEFAULT
@@ -766,6 +768,19 @@ def compare_measurements(meas, seq_rows=None, timing_limits=None):
             })
             # ⑦ 限制已有自己的「時序判定」，只在此列出、不計入規格總判定
 
+    from . import noise as NZ
+    noise = []
+    for x in noise_rows or []:
+        noise.append({
+            "ch": x["name"], "item": "突波／雜訊", "meas": NZ.value_text(x),
+            "spec": NZ.limit_text(x["lim"]) if x["kind"] != "current" else "電流只記錄",
+            "verdict": x["verdict"], "why": ("；".join(b for b in (x.get("why"), x.get("src")) if b)
+                                             + ("" if x.get("counts") else "；不計總判定")),
+            "kind": "noise", "counts": bool(x.get("counts")), "src": x.get("src"),
+        })
+        if x.get("counts"):
+            counts[x["verdict"]] = counts.get(x["verdict"], 0) + 1
+
     if counts["FAIL"]:
         overall = "FAIL"
     elif counts["PASS"]:
@@ -777,7 +792,7 @@ def compare_measurements(meas, seq_rows=None, timing_limits=None):
     pub, _meta = public_input(form)
     warn = PP.vin_mismatch(DUT.vin()) if DUT.get() else ""
     return {
-        "rows": rows, "timing": timing, "overall": overall, "overall_txt": overall_txt,
+        "rows": rows, "timing": timing, "noise": noise, "overall": overall, "overall_txt": overall_txt,
         "counts": counts, "form": form, "form_label": DUT.label(),
         "profile": profile, "note": (data or {}).get("note") or NOTE,
         "warn": warn, "public_notes": (pub or {}).get("notes") or [],
@@ -792,6 +807,9 @@ def csv_cols(result=None):
     bits = []
     for r in result.get("rows") or []:
         bits.append(f"{r['ch']} {r['verdict']}" + (f"（{r['why']}）" if r.get("why") and r["verdict"] != "PASS" else ""))
+    for n in result.get("noise") or []:
+        if n["verdict"] in ("PASS", "FAIL"):
+            bits.append(f"{n['ch']} 突波雜訊 {n['verdict']}" + (f"（{n['why']}）" if n["verdict"] == "FAIL" else ""))
     return {
         "規格": result.get("form_label") or result.get("form") or "",
         "電源設計表": result.get("profile") or "",
